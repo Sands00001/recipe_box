@@ -1,0 +1,37 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<title>Recipe Box</title>
+
+<!-- Add-to-home-screen support so it behaves like an app icon on phones/tablets -->
+<link rel="manifest" href="manifest.json" />
+<link rel="apple-touch-icon" href="apple-touch-icon.png" />
+<link rel="icon" href="icon-192.png" />
+<meta name="apple-mobile-web-app-capable" content="yes" />
+<meta name="apple-mobile-web-app-status-bar-style" content="default" />
+<meta name="apple-mobile-web-app-title" content="Recipe Box" />
+<meta name="theme-color" content="#c1622d" />
+
+<!-- Tabler Icons (same CDN icon set used by the drawings app) -->
+<link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/@tabler/icons-webfont@latest/dist/tabler-icons.min.css" />
+
+<!-- Cropper.js — used for cropping recipe photos before saving -->
+<link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/cropperjs/1.6.2/cropper.min.css" />
+<script src="https://cdnjs.cloudflare.com/ajax/libs/cropperjs/1.6.2/cropper.min.js"></script>
+
+<!-- Supabase JS client (same CDN approach as the drawings app) -->
+<script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2/dist/umd/supabase.min.js"></script>
+
+<link rel="stylesheet" href="style.css" />
+</head>
+<body>
+  <div id="app">Loading Recipe Box…</div>
+
+  <!-- config.js defines SUPABASE_URL / SUPABASE_ANON_KEY, see README -->
+  <script src="config.js"></script>
+  <script src="units.js"></script>
+  <script src="app.js"></script>
+</body>
+</html>

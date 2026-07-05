@@ -270,7 +270,10 @@ function renderDetail(root) {
         </div>
         ${otherPhotos.length ? `
           <div class="tag-row" style="margin-top:8px">
-            ${otherPhotos.map((p) => `<a href="${escapeHtml(p.url)}" target="_blank" rel="noopener"><img src="${escapeHtml(p.url)}" style="width:52px;height:52px;object-fit:cover;border-radius:6px;border:1px solid var(--border)"></a>`).join('')}
+            ${otherPhotos.map((p) => isPdfUrl(p.url)
+              ? `<a href="${escapeHtml(p.url)}" target="_blank" rel="noopener" style="width:52px;height:52px;display:flex;align-items:center;justify-content:center;border-radius:6px;border:1px solid var(--border);background:var(--accent-soft);color:var(--accent)"><i class="ti ti-file-type-pdf" style="font-size:22px"></i></a>`
+              : `<a href="${escapeHtml(p.url)}" target="_blank" rel="noopener"><img src="${escapeHtml(p.url)}" style="width:52px;height:52px;object-fit:cover;border-radius:6px;border:1px solid var(--border)"></a>`
+            ).join('')}
           </div>` : ''}
         <div class="field-row" style="margin-top:10px">
           <button onclick="goTo('edit', {id:'${recipe.id}'})"><i class="ti ti-edit"></i> Edit</button>
@@ -337,7 +340,11 @@ async function loadEditForm(id) {
   const { data: ingredients } = await supabaseClient.from('ingredients').select('*').eq('recipe_id', id).order('sort_order');
   const { data: existingPhotos } = await supabaseClient.from('recipe_photos').select('*').eq('recipe_id', id).order('sort_order');
   const photos = (existingPhotos || []).map((p) => ({
-    id: p.id, url: p.url, blob: null, mimeType: null, previewUrl: p.url, isThumbnail: p.is_thumbnail
+    id: p.id, url: p.url, blob: null, mimeType: null, previewUrl: p.url, isThumbnail: p.is_thumbnail,
+    // recipe_photos has no mime_type column — a PDF's stored URL always ends
+    // in .pdf (upload-recipe-photo names files by extension), so that's
+    // enough to tell it apart from an image without a migration.
+    isPdf: isPdfUrl(p.url)
   }));
   state.viewParams = {
     id,
@@ -363,8 +370,9 @@ function renderEdit(root) {
     <h2 style="margin-top:14px">${id === 'new' ? 'Add recipe' : 'Edit recipe'}</h2>
 
     <div class="field">
-      <label>Photos (front/back of a card, multiple pages, etc.)</label>
-      <input type="file" accept="image/*" capture="environment" onchange="handlePhotoSelected(event)" />
+      <label>Photos or PDFs (front/back of a card, multiple pages, etc.)</label>
+      <input type="file" accept="image/*,application/pdf" capture="environment" onchange="handlePhotoSelected(event)" />
+      <p style="font-size:12px;color:var(--text-muted);margin:6px 0 0">A PDF can be included in an AI scan, but only a photo can be set as the thumbnail.</p>
       <div id="photo-list">${renderPhotoList(photos)}</div>
       <div class="field-row" style="margin-top:8px">
         <button id="scan-btn" onclick="scanWithAI()" ${photos.length ? '' : 'disabled'}><i class="ti ti-sparkles"></i> Scan selected photo(s) with AI to prefill</button>
@@ -472,16 +480,32 @@ function ovenTempChanged(cValue) {
 
 // ---- photo capture / crop -------------------------------------------------
 
+// recipe_photos has no mime_type column, so a PDF is identified by its
+// stored URL ending in .pdf (upload-recipe-photo names the file after the
+// mime type's extension) — good enough without a migration.
+function isPdfUrl(url) {
+  return !!url && url.toLowerCase().split('?')[0].endsWith('.pdf');
+}
+
 function renderPhotoList(photos) {
   if (!photos || photos.length === 0) return '<p style="font-size:13px;color:var(--text-muted);margin:8px 0 0">No photos yet — add one below.</p>';
   return `
     <div style="display:flex;flex-wrap:wrap;gap:12px;margin-top:10px">
       ${photos.map((p, idx) => `
         <div class="photo-card">
-          <img src="${escapeHtml(p.previewUrl)}">
-          <label>
-            <input type="radio" name="thumbnail-radio" ${p.isThumbnail ? 'checked' : ''} onchange="setThumbnail(${idx})" /> Thumbnail
-          </label>
+          ${p.isPdf
+            ? `<div style="width:100%;height:100px;display:flex;flex-direction:column;align-items:center;justify-content:center;gap:4px;background:var(--accent-soft);color:var(--accent);border-radius:6px">
+                 <i class="ti ti-file-type-pdf" style="font-size:28px"></i>
+                 <span style="font-size:11px">${escapeHtml(p.fileName || 'PDF')}</span>
+               </div>`
+            : `<img src="${escapeHtml(p.previewUrl)}">`
+          }
+          ${p.isPdf
+            ? ''
+            : `<label>
+                 <input type="radio" name="thumbnail-radio" ${p.isThumbnail ? 'checked' : ''} onchange="setThumbnail(${idx})" /> Thumbnail
+               </label>`
+          }
           <label>
             <input type="checkbox" class="photo-scan-chk" data-idx="${idx}" ${p.id ? '' : 'checked'} /> Include in scan
           </label>
@@ -493,6 +517,7 @@ function renderPhotoList(photos) {
 }
 
 function setThumbnail(idx) {
+  if (state.viewParams.photos[idx].isPdf) return; // a PDF can't be the card/detail thumbnail
   state.viewParams.photos.forEach((p, i) => { p.isThumbnail = i === idx; });
 }
 
@@ -508,10 +533,26 @@ function removePhoto(idx) {
 function handlePhotoSelected(event) {
   const file = event.target.files[0];
   if (!file) return;
+  if (file.type === 'application/pdf') {
+    // No cropping for PDFs — Claude reads the document as-is, so stage it directly.
+    stagePdfBlob(file);
+    event.target.value = '';
+    return;
+  }
   const reader = new FileReader();
   reader.onload = () => openCropModal(reader.result, file.type);
   reader.readAsDataURL(file);
   event.target.value = ''; // allow re-selecting the same file later
+}
+
+function stagePdfBlob(file) {
+  const photos = state.viewParams.photos;
+  photos.push({
+    id: null, url: null, blob: file, mimeType: 'application/pdf', previewUrl: null,
+    isThumbnail: false, isPdf: true, fileName: file.name
+  });
+  document.getElementById('photo-list').innerHTML = renderPhotoList(photos);
+  document.getElementById('scan-btn').disabled = false;
 }
 
 function openCropModal(dataUrl, mimeType) {
@@ -577,7 +618,7 @@ function stagePhotoBlob(blob, mimeType) {
   const photos = state.viewParams.photos;
   photos.push({
     id: null, url: null, blob, mimeType: mimeType || 'image/jpeg', previewUrl,
-    isThumbnail: photos.length === 0
+    isThumbnail: photos.length === 0, isPdf: false
   });
   cancelCrop();
   document.getElementById('photo-list').innerHTML = renderPhotoList(photos);
@@ -635,13 +676,18 @@ async function scanWithAI() {
     for (const idx of checkedIdx) {
       const p = photos[idx];
       if (!p.blob) {
-        // Already-saved photo — only has a URL so far, fetch it once and cache the blob.
+        // Already-saved photo/PDF — only has a URL so far, fetch it once and cache the blob.
         const resp = await fetch(p.url);
         p.blob = await resp.blob();
-        p.mimeType = p.blob.type || 'image/jpeg';
+        p.mimeType = p.blob.type || (p.isPdf ? 'application/pdf' : 'image/jpeg');
       }
-      const scanBlob = await resizeImageForScan(p.blob);
-      images.push({ imageBase64: await blobToBase64(scanBlob), mimeType: 'image/jpeg' });
+      if (p.isPdf) {
+        // Claude reads PDFs directly — no resizing/downscaling applies here.
+        images.push({ imageBase64: await blobToBase64(p.blob), mimeType: 'application/pdf' });
+      } else {
+        const scanBlob = await resizeImageForScan(p.blob);
+        images.push({ imageBase64: await blobToBase64(scanBlob), mimeType: 'image/jpeg' });
+      }
     }
     const { data, error } = await supabaseClient.functions.invoke('extract-recipe', { body: { images } });
     if (error) throw await describeFunctionError(error);
@@ -756,7 +802,10 @@ async function savePhotos(recipeId) {
     await supabaseClient.from('recipe_photos').delete().in('id', removedIds);
   }
 
-  const thumbnail = photos.find((p) => p.isThumbnail) || photos[0] || null;
+  // Fall back to the first non-PDF photo if nothing's explicitly flagged as
+  // the thumbnail — a PDF can never end up as recipes.image_url, since that
+  // field is rendered as an <img> on cards/detail.
+  const thumbnail = photos.find((p) => p.isThumbnail) || photos.find((p) => !p.isPdf) || null;
   await supabaseClient.from('recipes')
     .update({ image_url: thumbnail ? thumbnail.url : null, original_image_url: thumbnail ? thumbnail.url : null })
     .eq('id', recipeId);

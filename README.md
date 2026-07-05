@@ -128,9 +128,16 @@ in the ingredient list, and you can always hand-edit any of the three values.
 Each recipe also has its own `preferred_unit_system` so the detail view opens
 showing the units you actually want for that recipe, with a toggle to switch.
 
-**Photo capture and cropping.** The file input accepts a live camera capture
-or an existing photo, then opens a crop tool (Cropper.js) before upload, so a
-photo of a whole page can be trimmed to just the recipe.
+**Photo capture, cropping and rotation.** The file input accepts a live camera
+capture or an existing photo, then opens a crop tool (Cropper.js) with rotate
+left/right buttons before it's attached — handy for a photo taken sideways.
+A recipe can have any number of photos (e.g. front and back of a Gousto card,
+or two cookbook pages): each one shows in a small list on the edit form where
+you pick which single photo is the **thumbnail** (shown on cards and the
+detail header) and tick which photo(s) to **include in the next AI scan** —
+the thumbnail and the scan photos don't have to be the same picture, and a
+scan can use more than one photo at once (e.g. ingredients on one page,
+method on another) so the two get combined into one recipe.
 
 **Shopping list.** Tick the checkbox on any number of recipe cards in Browse
 and a "Create shopping list" bar appears; it combines every ingredient across
@@ -143,12 +150,15 @@ button (uses the iOS/Safari share sheet — pick Reminders, Notes, Messages,
 or whatever you have installed) so it's easy to get onto your iPhone's to-do
 app.
 
-**AI scanning.** "Scan with AI" sends the cropped photo to the `extract-recipe`
-edge function, which asks Claude to transcribe title, ingredients with
-quantities/units, prep/cook time, oven temperature (°C/°F/gas mark), method,
-and best-guess meal type / main ingredients / diet. Everything it fills in is
-editable before you save — it's a first draft, not the final word, especially
-on handwriting.
+**AI scanning.** "Scan with AI" sends the selected photo(s) and/or PDF(s) to
+the `extract-recipe` edge function, which asks Claude to transcribe title,
+ingredients with quantities/units, prep/cook time, oven temperature
+(°C/°F/gas mark), method, and best-guess meal type / main ingredients / diet.
+The file picker on the edit form also accepts PDFs (e.g. an exported recipe
+or a scanned document) — a PDF can be ticked for scanning like a photo, but
+can't be the card thumbnail, since there's no single image to show. Everything
+it fills in is editable before you save — it's a first draft, not the final
+word, especially on handwriting.
 
 **Pantry search.** The "What can I make?" view lets you list what you've got
 on hand; `match_recipes_by_pantry` (a Postgres function using fuzzy text

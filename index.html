@@ -24,14 +24,20 @@
 <!-- Supabase JS client (same CDN approach as the drawings app) -->
 <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2/dist/umd/supabase.min.js"></script>
 
-<link rel="stylesheet" href="style.css" />
+<link rel="stylesheet" href="style.css?v=2" />
 </head>
 <body>
   <div id="app">Loading Recipe Box…</div>
 
   <!-- config.js defines SUPABASE_URL / SUPABASE_ANON_KEY, see README -->
   <script src="config.js"></script>
-  <script src="units.js"></script>
-  <script src="app.js"></script>
+  <script src="units.js?v=2"></script>
+  <script src="app.js?v=2"></script>
 </body>
 </html>
+
+<!-- Cache-busting note: app.js/units.js/style.css have no fingerprinted filenames,
+     so browsers (especially mobile Safari, and even more so once "Added to Home
+     Screen") can keep serving an old cached copy after a real update ships. Bump
+     the ?v=N query on whichever file changed each time you ship an update, so the
+     browser treats it as a new URL and re-fetches instead of reusing the cache. -->

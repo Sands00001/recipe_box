@@ -644,7 +644,7 @@ async function scanWithAI() {
       images.push({ imageBase64: await blobToBase64(scanBlob), mimeType: 'image/jpeg' });
     }
     const { data, error } = await supabaseClient.functions.invoke('extract-recipe', { body: { images } });
-    if (error) throw error;
+    if (error) throw await describeFunctionError(error);
     applyExtractedRecipe(data.data);
     statusEl.textContent = 'Prefilled — please check the details before saving.';
   } catch (err) {
@@ -653,6 +653,22 @@ async function scanWithAI() {
       : '';
     statusEl.textContent = `Could not read the photo(s): ${err.message || err}${hint}`;
   }
+}
+
+// supabase-js only gives a generic "Edge Function returned a non-2xx status
+// code" for FunctionsHttpError — the actual reason (from our edge function's
+// { error: "..." } JSON body) is on error.context, a raw Response object we
+// have to read ourselves to get anything useful on screen.
+async function describeFunctionError(error) {
+  if (error && error.context && typeof error.context.json === 'function') {
+    try {
+      const body = await error.context.clone().json();
+      if (body && body.error) return new Error(body.error);
+    } catch {
+      // response body wasn't JSON — fall through to the generic message
+    }
+  }
+  return error;
 }
 
 function blobToBase64(blob) {

@@ -371,7 +371,7 @@ function renderEdit(root) {
 
     <div class="field">
       <label>Photos or PDFs (front/back of a card, multiple pages, etc.)</label>
-      <input type="file" accept="image/*,application/pdf" capture="environment" onchange="handlePhotoSelected(event)" />
+      <input type="file" accept="image/*,application/pdf" onchange="handlePhotoSelected(event)" />
       <p style="font-size:12px;color:var(--text-muted);margin:6px 0 0">A PDF can be included in an AI scan, but only a photo can be set as the thumbnail.</p>
       <div id="photo-list">${renderPhotoList(photos)}</div>
       <div class="field-row" style="margin-top:8px">

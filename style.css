@@ -209,6 +209,48 @@ label { font-size: 13px; color: var(--text-muted); display: block; margin-bottom
 .auth-box { max-width: 360px; margin: 80px auto; background: var(--surface); padding: 24px; border-radius: var(--radius); box-shadow: var(--shadow); }
 .error-text { color: var(--danger); font-size: 13px; margin-top: 6px; }
 
+.planner-scroll { overflow-x: auto; padding-bottom: 4px; }
+.planner-table {
+  display: grid;
+  grid-template-columns: 84px repeat(7, minmax(120px, 1fr));
+  gap: 6px;
+  min-width: 760px;
+}
+.planner-cell {
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  padding: 6px 8px;
+  font-size: 13px;
+  min-height: 44px;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 6px;
+  background: var(--surface);
+}
+.planner-cell select { font-size: 12px; padding: 4px 6px; }
+.planner-header {
+  border: none;
+  background: none;
+  font-weight: 600;
+  font-size: 12px;
+  color: var(--text-muted);
+  text-align: center;
+  justify-content: center;
+  min-height: auto;
+}
+.planner-slot-label {
+  border: none;
+  background: none;
+  font-size: 12px;
+  color: var(--text-muted);
+  font-weight: 600;
+}
+.planner-filled { background: var(--accent-soft); align-items: center; }
+.planner-filled a { color: var(--accent-hover); text-decoration: none; font-size: 13px; }
+.planner-filled a:hover { text-decoration: underline; }
+.planner-filled button { padding: 3px 6px; }
+
 /* ---- phones / narrow screens ---- */
 @media (max-width: 640px) {
   .container { padding: 14px; }

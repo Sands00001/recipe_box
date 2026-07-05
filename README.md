@@ -160,6 +160,15 @@ can't be the card thumbnail, since there's no single image to show. Everything
 it fills in is editable before you save — it's a first draft, not the final
 word, especially on handwriting.
 
+**Meal planner.** The Planner view is a Monday–Sunday grid with a
+breakfast/lunch/dinner/dessert row per day; pick a recipe from the dropdown
+in any empty slot to assign it, or remove one with the × button. Use the
+arrows to flip to the previous/next week. A "Create shopping list from this
+week" button feeds every distinct recipe assigned that week straight into
+the same shopping-list feature described above. (Sending the plan to your
+phone's calendar isn't built yet — that's a separate piece for later if you
+want it.)
+
 **Pantry search.** The "What can I make?" view lets you list what you've got
 on hand; `match_recipes_by_pantry` (a Postgres function using fuzzy text
 matching via `pg_trgm`) ranks your recipes by what fraction of their

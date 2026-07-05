@@ -10,6 +10,7 @@ const MEAL_TYPES = ['breakfast', 'starter', 'main meal', 'side', 'dessert', 'sna
 const DIETS = ['none', 'vegetarian', 'vegan'];
 const SOURCES = ['gousto', 'handwritten', 'book', 'magazine', 'website', 'other'];
 const PHOTO_BUCKET = 'recipe-photos';
+const PLAN_SLOTS = ['breakfast', 'lunch', 'dinner', 'dessert']; // the weekly planner's meal slots
 
 let state = {
   user: null,
@@ -45,6 +46,7 @@ function render() {
       <nav>
         <button onclick="goTo('browse')"><i class="ti ti-list"></i> Browse</button>
         <button onclick="goTo('edit', {id:'new'})"><i class="ti ti-plus"></i> Add Recipe</button>
+        <button onclick="goTo('planner')"><i class="ti ti-calendar-week"></i> Planner</button>
         <button onclick="goTo('pantry')"><i class="ti ti-shopping-cart"></i> What can I make?</button>
         <button onclick="signOut()"><i class="ti ti-logout"></i></button>
       </nav>
@@ -59,6 +61,7 @@ function render() {
   else if (state.currentView === 'edit') renderEdit(root);
   else if (state.currentView === 'pantry') renderPantry(root);
   else if (state.currentView === 'shopping-list') renderShoppingList(root);
+  else if (state.currentView === 'planner') renderPlanner(root);
   else root.innerHTML = '<p>Loading…</p>';
 }
 
@@ -70,6 +73,7 @@ async function goTo(view, params = {}) {
   if (view === 'edit') await loadEditForm(params.id);
   if (view === 'pantry') await loadPantry();
   if (view === 'shopping-list') { render(); await loadShoppingList(); return; } // render loading state first, list fetch is async
+  if (view === 'planner') await loadPlanner(params.weekStart || formatDateISO(getMonday(new Date())));
   render();
 }
 
@@ -726,6 +730,11 @@ function blobToBase64(blob) {
   });
 }
 
+function capitalizeFirst(str) {
+  if (!str) return str;
+  return str.charAt(0).toUpperCase() + str.slice(1);
+}
+
 function applyExtractedRecipe(extracted) {
   if (!extracted) return;
   const r = state.viewParams.recipe;
@@ -740,7 +749,7 @@ function applyExtractedRecipe(extracted) {
   if (extracted.diet_guess) r.diet = extracted.diet_guess;
   if (Array.isArray(extracted.ingredients) && extracted.ingredients.length) {
     state.viewParams.ingredients = extracted.ingredients.map((i) => ({
-      name: i.name, quantity: i.quantity ?? '', unit: i.unit || 'g', notes: i.notes || ''
+      name: capitalizeFirst(i.name), quantity: i.quantity ?? '', unit: i.unit || 'g', notes: i.notes || ''
     }));
   }
   if (extracted.meal_type_guess) state.viewParams.mealTypes = [extracted.meal_type_guess];
@@ -1081,6 +1090,134 @@ async function shareShoppingList() {
   } else {
     statusEl.textContent = 'Sharing isn\'t supported in this browser — use Copy to clipboard instead (on iPhone, Safari supports Share).';
   }
+}
+
+// ---------------------------------------------------------------------------
+// Planner — weekly meal-slot grid, ties into the shopping list
+// ---------------------------------------------------------------------------
+
+function pad2(n) { return String(n).padStart(2, '0'); }
+function formatDateISO(d) { return `${d.getFullYear()}-${pad2(d.getMonth() + 1)}-${pad2(d.getDate())}`; }
+function parseISODate(s) { const [y, m, d] = s.split('-').map(Number); return new Date(y, m - 1, d); }
+function addDays(d, n) { const r = new Date(d); r.setDate(r.getDate() + n); return r; }
+function getMonday(d) {
+  const day = d.getDay(); // 0 = Sunday .. 6 = Saturday
+  const diff = (day === 0 ? -6 : 1) - day;
+  const monday = addDays(d, diff);
+  monday.setHours(0, 0, 0, 0);
+  return monday;
+}
+function formatDateShort(dateISO) {
+  return parseISODate(dateISO).toLocaleDateString(undefined, { day: 'numeric', month: 'short' });
+}
+
+async function loadPlanner(weekStartISO) {
+  const startDate = parseISODate(weekStartISO);
+  const weekDates = Array.from({ length: 7 }, (_, i) => formatDateISO(addDays(startDate, i)));
+
+  const { data: entries, error } = await supabaseClient
+    .from('meal_plan_entries')
+    .select('id, plan_date, meal_slot, recipe_id, recipes(title)')
+    .gte('plan_date', weekDates[0])
+    .lte('plan_date', weekDates[6]);
+  if (error) console.error(error);
+
+  const { data: allRecipes } = await supabaseClient.from('recipes').select('id, title').order('title');
+
+  const entryMap = {};
+  (entries || []).forEach((e) => {
+    entryMap[`${e.plan_date}|${e.meal_slot}`] = { id: e.id, recipeId: e.recipe_id, title: e.recipes?.title || '(deleted recipe)' };
+  });
+
+  state.viewParams = { weekStart: weekStartISO, weekDates, entryMap, allRecipes: allRecipes || [] };
+}
+
+function renderPlanner(root) {
+  const { weekDates, entryMap, allRecipes } = state.viewParams;
+  const dayNames = ['Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat', 'Sun'];
+  const distinctRecipeIds = new Set(Object.values(entryMap).map((e) => e.recipeId));
+
+  root.innerHTML = `
+    <div class="field-row" style="align-items:center;justify-content:space-between">
+      <h2 style="margin:0"><i class="ti ti-calendar-week"></i> Meal Planner</h2>
+      <div class="field-row" style="margin:0">
+        <button onclick="goToWeek(-1)"><i class="ti ti-chevron-left"></i></button>
+        <button onclick="goToWeek(0)">This week</button>
+        <button onclick="goToWeek(1)"><i class="ti ti-chevron-right"></i></button>
+      </div>
+    </div>
+    <p style="color:var(--text-muted);font-size:13px;margin:6px 0 14px">${formatDateShort(weekDates[0])} – ${formatDateShort(weekDates[6])}</p>
+
+    <div class="planner-scroll">
+      <div class="planner-table">
+        <div class="planner-cell planner-header"></div>
+        ${weekDates.map((d, i) => `<div class="planner-cell planner-header">${dayNames[i]}<br>${formatDateShort(d)}</div>`).join('')}
+        ${PLAN_SLOTS.map((slot) => `
+          <div class="planner-cell planner-slot-label">${capitalizeFirst(slot)}</div>
+          ${weekDates.map((d) => renderPlannerCell(d, slot, entryMap[`${d}|${slot}`], allRecipes)).join('')}
+        `).join('')}
+      </div>
+    </div>
+
+    <div class="field-row" style="margin-top:16px">
+      <button class="btn-primary" onclick="createShoppingListFromWeek()" ${distinctRecipeIds.size ? '' : 'disabled'}>
+        <i class="ti ti-shopping-cart"></i> Create shopping list from this week
+      </button>
+    </div>
+  `;
+}
+
+function renderPlannerCell(dateISO, slot, entry, allRecipes) {
+  if (entry) {
+    return `
+      <div class="planner-cell planner-filled">
+        <a href="#" onclick="goTo('detail', {id:'${entry.recipeId}'}); return false;">${escapeHtml(entry.title)}</a>
+        <button class="btn-icon btn-danger" onclick="removePlanEntry('${entry.id}')" title="Remove"><i class="ti ti-x"></i></button>
+      </div>
+    `;
+  }
+  return `
+    <div class="planner-cell">
+      <select onchange="assignPlanEntry('${dateISO}','${slot}', this.value)">
+        <option value="">+ Add</option>
+        ${allRecipes.map((r) => `<option value="${r.id}">${escapeHtml(r.title)}</option>`).join('')}
+      </select>
+    </div>
+  `;
+}
+
+async function assignPlanEntry(dateISO, slot, recipeId) {
+  if (!recipeId) return;
+  const { error } = await supabaseClient.from('meal_plan_entries')
+    .upsert(
+      { user_id: state.user.id, plan_date: dateISO, meal_slot: slot, recipe_id: recipeId },
+      { onConflict: 'user_id,plan_date,meal_slot' }
+    );
+  if (error) { alert(error.message); return; }
+  await loadPlanner(state.viewParams.weekStart);
+  renderPlanner(document.getElementById('view-root'));
+}
+
+async function removePlanEntry(entryId) {
+  await supabaseClient.from('meal_plan_entries').delete().eq('id', entryId);
+  await loadPlanner(state.viewParams.weekStart);
+  renderPlanner(document.getElementById('view-root'));
+}
+
+function goToWeek(delta) {
+  if (delta === 0) { goTo('planner', {}); return; }
+  const newStart = formatDateISO(addDays(parseISODate(state.viewParams.weekStart), delta * 7));
+  goTo('planner', { weekStart: newStart });
+}
+
+// Reuses the existing shopping-list feature (built for ticking recipes in
+// Browse) by populating the same selection Set from this week's distinct
+// planned recipes instead.
+function createShoppingListFromWeek() {
+  const ids = new Set(Object.values(state.viewParams.entryMap).map((e) => e.recipeId));
+  if (ids.size === 0) { alert('No meals planned for this week yet.'); return; }
+  state.selectedRecipeIds = ids;
+  goTo('shopping-list');
 }
 
 // ---------------------------------------------------------------------------

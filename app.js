@@ -393,8 +393,8 @@ function renderEdit(root) {
     </div>
 
     <div class="field"><label>Meal type (select all that apply)</label>
-      <div class="field-row">
-        ${MEAL_TYPES.map((m) => `<label style="display:flex;align-items:center;gap:4px;width:auto">
+      <div class="checkbox-row">
+        ${MEAL_TYPES.map((m) => `<label>
             <input type="checkbox" value="${m}" class="meal-type-chk" ${mealTypes.includes(m) ? 'checked' : ''}/> ${m}
           </label>`).join('')}
       </div>
@@ -477,15 +477,15 @@ function renderPhotoList(photos) {
   return `
     <div style="display:flex;flex-wrap:wrap;gap:12px;margin-top:10px">
       ${photos.map((p, idx) => `
-        <div style="width:140px;border:1px solid var(--border);border-radius:8px;padding:8px;text-align:center">
-          <img src="${escapeHtml(p.previewUrl)}" style="width:100%;height:100px;object-fit:cover;border-radius:6px">
-          <label style="display:flex;align-items:center;gap:4px;font-size:12px;margin-top:6px;width:auto">
+        <div class="photo-card">
+          <img src="${escapeHtml(p.previewUrl)}">
+          <label>
             <input type="radio" name="thumbnail-radio" ${p.isThumbnail ? 'checked' : ''} onchange="setThumbnail(${idx})" /> Thumbnail
           </label>
-          <label style="display:flex;align-items:center;gap:4px;font-size:12px;margin-top:2px;width:auto">
+          <label>
             <input type="checkbox" class="photo-scan-chk" data-idx="${idx}" ${p.id ? '' : 'checked'} /> Include in scan
           </label>
-          <button class="btn-icon btn-danger" style="margin-top:6px" onclick="removePhoto(${idx})"><i class="ti ti-x"></i> Remove</button>
+          <button class="btn-icon btn-danger" onclick="removePhoto(${idx})"><i class="ti ti-x"></i> Remove</button>
         </div>
       `).join('')}
     </div>
@@ -604,6 +604,25 @@ async function confirmCrop(mimeType) {
   canvas.toBlob((blob) => stagePhotoBlob(blob, mimeType), mimeType || 'image/jpeg', 0.9);
 }
 
+// Downscale a photo before sending it to the AI scan — the saved/thumbnail
+// photo keeps its full quality, but a scan of 2-3 full-resolution crops as
+// base64 is a large enough payload that it can time out before ever reaching
+// the edge function. 1024px is still plenty legible for OCR-style reading.
+async function resizeImageForScan(blob, maxDim = 1024, quality = 0.7) {
+  const objectUrl = URL.createObjectURL(blob);
+  try {
+    const img = await loadImageElement(objectUrl);
+    const scale = Math.min(1, maxDim / Math.max(img.width, img.height));
+    const canvas = document.createElement('canvas');
+    canvas.width = Math.max(1, Math.round(img.width * scale));
+    canvas.height = Math.max(1, Math.round(img.height * scale));
+    canvas.getContext('2d').drawImage(img, 0, 0, canvas.width, canvas.height);
+    return await new Promise((resolve) => canvas.toBlob(resolve, 'image/jpeg', quality));
+  } finally {
+    URL.revokeObjectURL(objectUrl);
+  }
+}
+
 async function scanWithAI() {
   const photos = state.viewParams.photos;
   const checkedIdx = Array.from(document.querySelectorAll('.photo-scan-chk:checked')).map((c) => Number(c.dataset.idx));
@@ -621,14 +640,18 @@ async function scanWithAI() {
         p.blob = await resp.blob();
         p.mimeType = p.blob.type || 'image/jpeg';
       }
-      images.push({ imageBase64: await blobToBase64(p.blob), mimeType: p.mimeType || 'image/jpeg' });
+      const scanBlob = await resizeImageForScan(p.blob);
+      images.push({ imageBase64: await blobToBase64(scanBlob), mimeType: 'image/jpeg' });
     }
     const { data, error } = await supabaseClient.functions.invoke('extract-recipe', { body: { images } });
     if (error) throw error;
     applyExtractedRecipe(data.data);
     statusEl.textContent = 'Prefilled — please check the details before saving.';
   } catch (err) {
-    statusEl.textContent = `Could not read the photo(s): ${err.message || err}`;
+    const hint = /send a request/i.test(err.message || '')
+      ? ' (the request didn\'t reach the server — check your connection, or try scanning fewer photos at once)'
+      : '';
+    statusEl.textContent = `Could not read the photo(s): ${err.message || err}${hint}`;
   }
 }
 

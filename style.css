@@ -93,6 +93,7 @@ label { font-size: 13px; color: var(--text-muted); display: block; margin-bottom
   display: inline-flex; align-items: center; gap: 5px;
   width: auto; margin: 0; white-space: nowrap; color: var(--text);
 }
+.checkbox-row input { width: auto; flex: none; }
 
 .photo-card {
   width: 140px; border: 1px solid var(--border); border-radius: var(--radius);
@@ -103,6 +104,7 @@ label { font-size: 13px; color: var(--text-muted); display: block; margin-bottom
   display: flex; align-items: center; gap: 5px; font-size: 12px;
   width: auto; margin: 0; text-align: left;
 }
+.photo-card input { width: auto; flex: none; }
 
 .filters {
   display: flex;

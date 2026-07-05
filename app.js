@@ -20,8 +20,7 @@ let state = {
   filters: { search: '', mealType: '', mainIngredient: '', diet: '', source: '' },
   pantryItems: [],
   pantryMatches: null,
-  cropper: null,
-  pendingPhoto: null, // { blob, url } staged before a recipe is saved
+  cropper: null, // active Cropper.js instance while the crop modal is open
   selectedRecipeIds: new Set(), // recipes ticked in Browse, for the shopping list
   shoppingList: null, // { recipeTitles, system, lines } once generated
   shoppingListSystem: 'metric'
@@ -239,15 +238,17 @@ function updateFilter(key, value) {
 async function loadRecipeDetail(id) {
   const { data: recipe } = await supabaseClient.from('recipes').select('*, recipe_tags(tag_type, tag_value)').eq('id', id).single();
   const { data: ingredients } = await supabaseClient.from('ingredients').select('*').eq('recipe_id', id).order('sort_order');
-  state.viewParams = { id, recipe, ingredients: ingredients || [], displaySystem: recipe?.preferred_unit_system || 'metric' };
+  const { data: photos } = await supabaseClient.from('recipe_photos').select('*').eq('recipe_id', id).order('sort_order');
+  state.viewParams = { id, recipe, ingredients: ingredients || [], photos: photos || [], displaySystem: recipe?.preferred_unit_system || 'metric' };
 }
 
 function renderDetail(root) {
-  const { recipe, ingredients, displaySystem } = state.viewParams;
+  const { recipe, ingredients, photos, displaySystem } = state.viewParams;
   if (!recipe) { root.innerHTML = '<p>Recipe not found.</p>'; return; }
 
   const mealTags = recipe.recipe_tags.filter((t) => t.tag_type === 'meal_type').map((t) => t.tag_value);
   const ingTags = recipe.recipe_tags.filter((t) => t.tag_type === 'main_ingredient').map((t) => t.tag_value);
+  const otherPhotos = (photos || []).filter((p) => p.url !== recipe.image_url);
 
   root.innerHTML = `
     <button onclick="goTo('browse')"><i class="ti ti-arrow-left"></i> Back</button>
@@ -267,6 +268,10 @@ function renderDetail(root) {
           ${recipe.cook_time_minutes ? `<span><i class="ti ti-flame"></i> Cook ${recipe.cook_time_minutes} min</span>` : ''}
           ${recipe.oven_temp_c ? `<span><i class="ti ti-temperature"></i> ${recipe.oven_temp_c}°C / ${recipe.oven_temp_f}°F / Gas ${recipe.oven_gas_mark}</span>` : ''}
         </div>
+        ${otherPhotos.length ? `
+          <div class="tag-row" style="margin-top:8px">
+            ${otherPhotos.map((p) => `<a href="${escapeHtml(p.url)}" target="_blank" rel="noopener"><img src="${escapeHtml(p.url)}" style="width:52px;height:52px;object-fit:cover;border-radius:6px;border:1px solid var(--border)"></a>`).join('')}
+          </div>` : ''}
         <div class="field-row" style="margin-top:10px">
           <button onclick="goTo('edit', {id:'${recipe.id}'})"><i class="ti ti-edit"></i> Edit</button>
           <button class="btn-danger" onclick="deleteRecipe('${recipe.id}')"><i class="ti ti-trash"></i> Delete</button>
@@ -315,7 +320,6 @@ async function deleteRecipe(id) {
 // ---------------------------------------------------------------------------
 
 async function loadEditForm(id) {
-  state.pendingPhoto = null; // don't let a staged photo from a different recipe bleed in here
   if (id === 'new') {
     state.viewParams = {
       id: 'new',
@@ -324,12 +328,17 @@ async function loadEditForm(id) {
         oven_temp_c: '', oven_temp_f: '', oven_gas_mark: '', instructions: '', notes: '', preferred_unit_system: 'metric',
         image_url: '', original_image_url: ''
       },
-      mealTypes: [], mainIngredients: '', ingredients: [emptyIngredientRow()]
+      mealTypes: [], mainIngredients: '', ingredients: [emptyIngredientRow()],
+      photos: [], originalPhotoIds: []
     };
     return;
   }
   const { data: recipe } = await supabaseClient.from('recipes').select('*, recipe_tags(tag_type, tag_value)').eq('id', id).single();
   const { data: ingredients } = await supabaseClient.from('ingredients').select('*').eq('recipe_id', id).order('sort_order');
+  const { data: existingPhotos } = await supabaseClient.from('recipe_photos').select('*').eq('recipe_id', id).order('sort_order');
+  const photos = (existingPhotos || []).map((p) => ({
+    id: p.id, url: p.url, blob: null, mimeType: null, previewUrl: p.url, isThumbnail: p.is_thumbnail
+  }));
   state.viewParams = {
     id,
     recipe,
@@ -337,7 +346,9 @@ async function loadEditForm(id) {
     mainIngredients: recipe.recipe_tags.filter((t) => t.tag_type === 'main_ingredient').map((t) => t.tag_value).join(', '),
     ingredients: (ingredients && ingredients.length ? ingredients : [emptyIngredientRow()]).map((i) => ({
       name: i.name, quantity: i.original_quantity, unit: i.original_unit, notes: i.notes
-    }))
+    })),
+    photos,
+    originalPhotoIds: photos.map((p) => p.id)
   };
 }
 
@@ -346,17 +357,17 @@ function emptyIngredientRow() {
 }
 
 function renderEdit(root) {
-  const { recipe, mealTypes, mainIngredients, ingredients, id } = state.viewParams;
+  const { recipe, mealTypes, mainIngredients, ingredients, photos, id } = state.viewParams;
   root.innerHTML = `
     <button onclick="goTo('browse')"><i class="ti ti-arrow-left"></i> Back</button>
     <h2 style="margin-top:14px">${id === 'new' ? 'Add recipe' : 'Edit recipe'}</h2>
 
     <div class="field">
-      <label>Photo of the card / page</label>
+      <label>Photos (front/back of a card, multiple pages, etc.)</label>
       <input type="file" accept="image/*" capture="environment" onchange="handlePhotoSelected(event)" />
-      <div id="photo-preview" style="margin-top:8px">${recipe.image_url ? `<img src="${escapeHtml(recipe.image_url)}" style="max-width:200px;border-radius:8px">` : ''}</div>
+      <div id="photo-list">${renderPhotoList(photos)}</div>
       <div class="field-row" style="margin-top:8px">
-        <button id="scan-btn" onclick="scanWithAI()" ${state.pendingPhoto ? '' : 'disabled'}><i class="ti ti-sparkles"></i> Scan with AI to prefill</button>
+        <button id="scan-btn" onclick="scanWithAI()" ${photos.length ? '' : 'disabled'}><i class="ti ti-sparkles"></i> Scan selected photo(s) with AI to prefill</button>
       </div>
       <div id="scan-status" class="error-text"></div>
     </div>
@@ -461,12 +472,46 @@ function ovenTempChanged(cValue) {
 
 // ---- photo capture / crop -------------------------------------------------
 
+function renderPhotoList(photos) {
+  if (!photos || photos.length === 0) return '<p style="font-size:13px;color:var(--text-muted);margin:8px 0 0">No photos yet — add one below.</p>';
+  return `
+    <div style="display:flex;flex-wrap:wrap;gap:12px;margin-top:10px">
+      ${photos.map((p, idx) => `
+        <div style="width:140px;border:1px solid var(--border);border-radius:8px;padding:8px;text-align:center">
+          <img src="${escapeHtml(p.previewUrl)}" style="width:100%;height:100px;object-fit:cover;border-radius:6px">
+          <label style="display:flex;align-items:center;gap:4px;font-size:12px;margin-top:6px;width:auto">
+            <input type="radio" name="thumbnail-radio" ${p.isThumbnail ? 'checked' : ''} onchange="setThumbnail(${idx})" /> Thumbnail
+          </label>
+          <label style="display:flex;align-items:center;gap:4px;font-size:12px;margin-top:2px;width:auto">
+            <input type="checkbox" class="photo-scan-chk" data-idx="${idx}" ${p.id ? '' : 'checked'} /> Include in scan
+          </label>
+          <button class="btn-icon btn-danger" style="margin-top:6px" onclick="removePhoto(${idx})"><i class="ti ti-x"></i> Remove</button>
+        </div>
+      `).join('')}
+    </div>
+  `;
+}
+
+function setThumbnail(idx) {
+  state.viewParams.photos.forEach((p, i) => { p.isThumbnail = i === idx; });
+}
+
+function removePhoto(idx) {
+  const photos = state.viewParams.photos;
+  const wasThumbnail = photos[idx].isThumbnail;
+  photos.splice(idx, 1);
+  if (wasThumbnail && photos.length) photos[0].isThumbnail = true;
+  document.getElementById('photo-list').innerHTML = renderPhotoList(photos);
+  document.getElementById('scan-btn').disabled = photos.length === 0;
+}
+
 function handlePhotoSelected(event) {
   const file = event.target.files[0];
   if (!file) return;
   const reader = new FileReader();
   reader.onload = () => openCropModal(reader.result, file.type);
   reader.readAsDataURL(file);
+  event.target.value = ''; // allow re-selecting the same file later
 }
 
 function openCropModal(dataUrl, mimeType) {
@@ -474,9 +519,13 @@ function openCropModal(dataUrl, mimeType) {
   modal.className = 'crop-modal';
   modal.innerHTML = `
     <div class="crop-modal-inner">
-      <p style="margin-top:0;font-size:13px;color:var(--text-muted)">Drag the corners to crop, then click <strong>Use this crop</strong> below — the photo isn't attached until you do.</p>
+      <p style="margin-top:0;font-size:13px;color:var(--text-muted)">Drag the corners to crop and use the rotate buttons if it's sideways, then click <strong>Use this crop</strong> below — the photo isn't attached until you do.</p>
       <div class="crop-image-wrap"><img id="crop-target" src="${dataUrl}"></div>
       <div class="field-row">
+        <button type="button" onclick="rotateCrop(-90)"><i class="ti ti-rotate"></i> Rotate left</button>
+        <button type="button" onclick="rotateCrop(90)"><i class="ti ti-rotate-clockwise"></i> Rotate right</button>
+      </div>
+      <div class="field-row" style="margin-top:8px">
         <button class="btn-primary" onclick="confirmCrop('${mimeType}')"><i class="ti ti-crop"></i> Use this crop</button>
         <button onclick="cancelCrop()">Cancel</button>
       </div>
@@ -486,14 +535,26 @@ function openCropModal(dataUrl, mimeType) {
   const img = document.getElementById('crop-target');
   state._cropModal = modal;
   state._originalDataUrl = dataUrl;
+  state._fallbackRotationDeg = 0;
   try {
     state.cropper = new Cropper(img, { viewMode: 1, autoCropArea: 1 });
   } catch (err) {
     // Cropper library failed to load (e.g. CDN blocked) — don't lose the
-    // photo, just skip cropping and use it as-is.
+    // photo, just skip cropping and use it as-is (rotate still works via
+    // the canvas fallback in confirmCrop).
     console.error('Cropper failed to initialize, using photo uncropped:', err);
     state.cropper = null;
   }
+}
+
+function rotateCrop(deg) {
+  if (state.cropper) {
+    state.cropper.rotate(deg);
+    return;
+  }
+  state._fallbackRotationDeg = ((state._fallbackRotationDeg + deg) % 360 + 360) % 360;
+  const img = document.getElementById('crop-target');
+  if (img) img.style.transform = `rotate(${state._fallbackRotationDeg}deg)`;
 }
 
 function cancelCrop() {
@@ -502,39 +563,72 @@ function cancelCrop() {
   state.cropper = null;
 }
 
+function loadImageElement(src) {
+  return new Promise((resolve, reject) => {
+    const img = new Image();
+    img.onload = () => resolve(img);
+    img.onerror = reject;
+    img.src = src;
+  });
+}
+
 function stagePhotoBlob(blob, mimeType) {
-  state.pendingPhoto = { blob, mimeType, originalDataUrl: state._originalDataUrl };
   const previewUrl = URL.createObjectURL(blob);
-  document.getElementById('photo-preview').innerHTML = `<img src="${previewUrl}" style="max-width:200px;border-radius:8px">`;
-  document.getElementById('scan-btn').disabled = false;
+  const photos = state.viewParams.photos;
+  photos.push({
+    id: null, url: null, blob, mimeType: mimeType || 'image/jpeg', previewUrl,
+    isThumbnail: photos.length === 0
+  });
   cancelCrop();
+  document.getElementById('photo-list').innerHTML = renderPhotoList(photos);
+  document.getElementById('scan-btn').disabled = false;
 }
 
 async function confirmCrop(mimeType) {
-  if (!state.cropper) {
-    // Cropping tool wasn't available — fall back to using the photo as taken.
-    const blob = await (await fetch(state._originalDataUrl)).blob();
-    stagePhotoBlob(blob, mimeType);
+  if (state.cropper) {
+    const canvas = state.cropper.getCroppedCanvas({ maxWidth: 1400, maxHeight: 1400 });
+    canvas.toBlob((blob) => stagePhotoBlob(blob, mimeType), mimeType || 'image/jpeg', 0.9);
     return;
   }
-  const canvas = state.cropper.getCroppedCanvas({ maxWidth: 1400, maxHeight: 1400 });
+  // No cropper available — still apply any rotation the user picked, via canvas.
+  const deg = state._fallbackRotationDeg || 0;
+  const img = await loadImageElement(state._originalDataUrl);
+  const canvas = document.createElement('canvas');
+  const swap = deg === 90 || deg === 270;
+  canvas.width = swap ? img.height : img.width;
+  canvas.height = swap ? img.width : img.height;
+  const ctx = canvas.getContext('2d');
+  ctx.translate(canvas.width / 2, canvas.height / 2);
+  ctx.rotate((deg * Math.PI) / 180);
+  ctx.drawImage(img, -img.width / 2, -img.height / 2);
   canvas.toBlob((blob) => stagePhotoBlob(blob, mimeType), mimeType || 'image/jpeg', 0.9);
 }
 
 async function scanWithAI() {
-  if (!state.pendingPhoto) return;
+  const photos = state.viewParams.photos;
+  const checkedIdx = Array.from(document.querySelectorAll('.photo-scan-chk:checked')).map((c) => Number(c.dataset.idx));
+  if (checkedIdx.length === 0) { alert('Tick "Include in scan" on at least one photo first.'); return; }
+
   const statusEl = document.getElementById('scan-status');
   statusEl.textContent = 'Reading recipe with AI…';
   try {
-    const base64 = await blobToBase64(state.pendingPhoto.blob);
-    const { data, error } = await supabaseClient.functions.invoke('extract-recipe', {
-      body: { imageBase64: base64, mimeType: state.pendingPhoto.mimeType || 'image/jpeg' }
-    });
+    const images = [];
+    for (const idx of checkedIdx) {
+      const p = photos[idx];
+      if (!p.blob) {
+        // Already-saved photo — only has a URL so far, fetch it once and cache the blob.
+        const resp = await fetch(p.url);
+        p.blob = await resp.blob();
+        p.mimeType = p.blob.type || 'image/jpeg';
+      }
+      images.push({ imageBase64: await blobToBase64(p.blob), mimeType: p.mimeType || 'image/jpeg' });
+    }
+    const { data, error } = await supabaseClient.functions.invoke('extract-recipe', { body: { images } });
     if (error) throw error;
     applyExtractedRecipe(data.data);
     statusEl.textContent = 'Prefilled — please check the details before saving.';
   } catch (err) {
-    statusEl.textContent = `Could not read the photo: ${err.message || err}`;
+    statusEl.textContent = `Could not read the photo(s): ${err.message || err}`;
   }
 }
 
@@ -571,20 +665,66 @@ function applyExtractedRecipe(extracted) {
 
 // ---- save ------------------------------------------------------------
 
-async function uploadStagedPhoto(recipeId) {
-  if (!state.pendingPhoto) return { imageUrl: null, originalUrl: null };
+async function uploadOnePhoto(blob, mimeType, recipeId) {
   // Uploaded via an edge function (using the service role key server-side)
   // rather than directly from the browser — the storage-js client wasn't
   // attaching the user's session token to Storage API requests specifically,
   // which made direct client-side uploads fail RLS. Routing through a
   // function that verifies the caller's JWT itself sidesteps that.
-  const base64 = await blobToBase64(state.pendingPhoto.blob);
+  const base64 = await blobToBase64(blob);
   const { data, error } = await supabaseClient.functions.invoke('upload-recipe-photo', {
-    body: { imageBase64: base64, mimeType: state.pendingPhoto.mimeType || 'image/jpeg', recipeId }
+    body: { imageBase64: base64, mimeType: mimeType || 'image/jpeg', recipeId }
   });
   if (error) throw error;
   if (data?.error) throw new Error(data.error);
-  return { imageUrl: data.url, originalUrl: data.url };
+  return data.url;
+}
+
+// Persists every photo currently in the edit form: uploads any brand-new
+// ones and inserts their recipe_photos row, keeps existing ones' thumbnail
+// flag/order up to date, removes rows for any photo taken out of the list
+// during this edit, and mirrors whichever photo is the thumbnail onto
+// recipes.image_url so Browse/detail keep working without a join.
+async function savePhotos(recipeId) {
+  const photos = state.viewParams.photos;
+  const originalIds = state.viewParams.originalPhotoIds || [];
+  const failures = [];
+
+  for (let idx = 0; idx < photos.length; idx++) {
+    const p = photos[idx];
+    try {
+      if (!p.id) {
+        const url = await uploadOnePhoto(p.blob, p.mimeType, recipeId);
+        const { data, error } = await supabaseClient.from('recipe_photos')
+          .insert({ recipe_id: recipeId, url, is_thumbnail: !!p.isThumbnail, sort_order: idx })
+          .select().single();
+        if (error) throw error;
+        p.id = data.id;
+        p.url = url;
+      } else {
+        await supabaseClient.from('recipe_photos')
+          .update({ is_thumbnail: !!p.isThumbnail, sort_order: idx })
+          .eq('id', p.id);
+      }
+    } catch (err) {
+      failures.push(err.message || String(err));
+    }
+  }
+
+  const currentIds = photos.filter((p) => p.id).map((p) => p.id);
+  const removedIds = originalIds.filter((pid) => !currentIds.includes(pid));
+  if (removedIds.length) {
+    await supabaseClient.from('recipe_photos').delete().in('id', removedIds);
+  }
+
+  const thumbnail = photos.find((p) => p.isThumbnail) || photos[0] || null;
+  await supabaseClient.from('recipes')
+    .update({ image_url: thumbnail ? thumbnail.url : null, original_image_url: thumbnail ? thumbnail.url : null })
+    .eq('id', recipeId);
+
+  if (failures.length) {
+    alert(`The recipe saved, but ${failures.length} photo(s) failed to upload:\n${failures.join('\n')}\nTry editing the recipe and adding them again.`);
+  }
 }
 
 async function saveRecipe() {
@@ -617,15 +757,7 @@ async function saveRecipe() {
     if (error) { alert(error.message); return; }
   }
 
-  if (state.pendingPhoto) {
-    try {
-      const { imageUrl, originalUrl } = await uploadStagedPhoto(recipeId);
-      await supabaseClient.from('recipes').update({ image_url: imageUrl, original_image_url: originalUrl }).eq('id', recipeId);
-      state.pendingPhoto = null;
-    } catch (err) {
-      alert(`The recipe saved, but the photo failed to upload: ${err.message || err}. Try editing the recipe and adding the photo again.`);
-    }
-  }
+  await savePhotos(recipeId);
 
   await saveTags(recipeId);
   await saveIngredients(recipeId);

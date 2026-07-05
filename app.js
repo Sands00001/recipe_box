@@ -63,14 +63,14 @@ function render() {
   else root.innerHTML = '<p>Loading…</p>';
 }
 
-function goTo(view, params = {}) {
+async function goTo(view, params = {}) {
   state.currentView = view;
   state.viewParams = params;
-  if (view === 'browse') loadRecipes();
-  if (view === 'detail') loadRecipeDetail(params.id);
-  if (view === 'edit') loadEditForm(params.id);
-  if (view === 'pantry') loadPantry();
-  if (view === 'shopping-list') { render(); loadShoppingList(); return; } // render loading state first, list fetch is async
+  if (view === 'browse') await loadRecipes();
+  if (view === 'detail') await loadRecipeDetail(params.id);
+  if (view === 'edit') await loadEditForm(params.id);
+  if (view === 'pantry') await loadPantry();
+  if (view === 'shopping-list') { render(); await loadShoppingList(); return; } // render loading state first, list fetch is async
   render();
 }
 

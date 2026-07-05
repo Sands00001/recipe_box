@@ -315,6 +315,7 @@ async function deleteRecipe(id) {
 // ---------------------------------------------------------------------------
 
 async function loadEditForm(id) {
+  state.pendingPhoto = null; // don't let a staged photo from a different recipe bleed in here
   if (id === 'new') {
     state.viewParams = {
       id: 'new',
@@ -473,6 +474,7 @@ function openCropModal(dataUrl, mimeType) {
   modal.className = 'crop-modal';
   modal.innerHTML = `
     <div class="crop-modal-inner">
+      <p style="margin-top:0;font-size:13px;color:var(--text-muted)">Drag the corners to crop, then click <strong>Use this crop</strong> below — the photo isn't attached until you do.</p>
       <div class="crop-image-wrap"><img id="crop-target" src="${dataUrl}"></div>
       <div class="field-row">
         <button class="btn-primary" onclick="confirmCrop('${mimeType}')"><i class="ti ti-crop"></i> Use this crop</button>
@@ -482,9 +484,16 @@ function openCropModal(dataUrl, mimeType) {
   `;
   document.body.appendChild(modal);
   const img = document.getElementById('crop-target');
-  state.cropper = new Cropper(img, { viewMode: 1, autoCropArea: 1 });
   state._cropModal = modal;
   state._originalDataUrl = dataUrl;
+  try {
+    state.cropper = new Cropper(img, { viewMode: 1, autoCropArea: 1 });
+  } catch (err) {
+    // Cropper library failed to load (e.g. CDN blocked) — don't lose the
+    // photo, just skip cropping and use it as-is.
+    console.error('Cropper failed to initialize, using photo uncropped:', err);
+    state.cropper = null;
+  }
 }
 
 function cancelCrop() {
@@ -493,15 +502,23 @@ function cancelCrop() {
   state.cropper = null;
 }
 
-function confirmCrop(mimeType) {
+function stagePhotoBlob(blob, mimeType) {
+  state.pendingPhoto = { blob, mimeType, originalDataUrl: state._originalDataUrl };
+  const previewUrl = URL.createObjectURL(blob);
+  document.getElementById('photo-preview').innerHTML = `<img src="${previewUrl}" style="max-width:200px;border-radius:8px">`;
+  document.getElementById('scan-btn').disabled = false;
+  cancelCrop();
+}
+
+async function confirmCrop(mimeType) {
+  if (!state.cropper) {
+    // Cropping tool wasn't available — fall back to using the photo as taken.
+    const blob = await (await fetch(state._originalDataUrl)).blob();
+    stagePhotoBlob(blob, mimeType);
+    return;
+  }
   const canvas = state.cropper.getCroppedCanvas({ maxWidth: 1400, maxHeight: 1400 });
-  canvas.toBlob(async (blob) => {
-    state.pendingPhoto = { blob, mimeType, originalDataUrl: state._originalDataUrl };
-    const previewUrl = URL.createObjectURL(blob);
-    document.getElementById('photo-preview').innerHTML = `<img src="${previewUrl}" style="max-width:200px;border-radius:8px">`;
-    document.getElementById('scan-btn').disabled = false;
-    cancelCrop();
-  }, mimeType || 'image/jpeg', 0.9);
+  canvas.toBlob((blob) => stagePhotoBlob(blob, mimeType), mimeType || 'image/jpeg', 0.9);
 }
 
 async function scanWithAI() {
@@ -597,9 +614,13 @@ async function saveRecipe() {
   }
 
   if (state.pendingPhoto) {
-    const { imageUrl, originalUrl } = await uploadStagedPhoto(recipeId);
-    await supabaseClient.from('recipes').update({ image_url: imageUrl, original_image_url: originalUrl }).eq('id', recipeId);
-    state.pendingPhoto = null;
+    try {
+      const { imageUrl, originalUrl } = await uploadStagedPhoto(recipeId);
+      await supabaseClient.from('recipes').update({ image_url: imageUrl, original_image_url: originalUrl }).eq('id', recipeId);
+      state.pendingPhoto = null;
+    } catch (err) {
+      alert(`The recipe saved, but the photo failed to upload: ${err.message || err}. Try editing the recipe and adding the photo again.`);
+    }
   }
 
   await saveTags(recipeId);

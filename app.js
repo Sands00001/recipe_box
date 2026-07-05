@@ -4,7 +4,7 @@
  * a single #app div re-rendered via innerHTML, driven by a `currentView` string.
  */
 
-const supabase = window.supabase.createClient(SUPABASE_URL, SUPABASE_ANON_KEY);
+const supabaseClient = window.supabase.createClient(SUPABASE_URL, SUPABASE_ANON_KEY);
 
 const MEAL_TYPES = ['breakfast', 'starter', 'main meal', 'side', 'dessert', 'snack', 'baking'];
 const DIETS = ['none', 'vegetarian', 'vegan'];
@@ -96,7 +96,7 @@ function renderAuth() {
 async function signIn() {
   const email = document.getElementById('auth-email').value.trim();
   const password = document.getElementById('auth-password').value;
-  const { error } = await supabase.auth.signInWithPassword({ email, password });
+  const { error } = await supabaseClient.auth.signInWithPassword({ email, password });
   if (error) return showAuthError(error.message);
   await bootAfterAuth();
 }
@@ -104,7 +104,7 @@ async function signIn() {
 async function signUp() {
   const email = document.getElementById('auth-email').value.trim();
   const password = document.getElementById('auth-password').value;
-  const { error } = await supabase.auth.signUp({ email, password });
+  const { error } = await supabaseClient.auth.signUp({ email, password });
   if (error) return showAuthError(error.message);
   showAuthError('Account created — check your email if confirmation is required, then sign in.');
 }
@@ -115,15 +115,15 @@ function showAuthError(msg) {
 }
 
 async function signOut() {
-  await supabase.auth.signOut();
+  await supabaseClient.auth.signOut();
   state.user = null;
   render();
 }
 
 async function bootAfterAuth() {
-  const { data } = await supabase.auth.getUser();
+  const { data } = await supabaseClient.auth.getUser();
   state.user = data.user;
-  const { data: densityRows } = await supabase.from('ingredient_density_reference').select('*');
+  const { data: densityRows } = await supabaseClient.from('ingredient_density_reference').select('*');
   state.densityMap = buildDensityMap(densityRows);
   goTo('browse');
 }
@@ -133,7 +133,7 @@ async function bootAfterAuth() {
 // ---------------------------------------------------------------------------
 
 async function loadRecipes() {
-  let query = supabase.from('recipes').select('*, recipe_tags(tag_type, tag_value)').order('created_at', { ascending: false });
+  let query = supabaseClient.from('recipes').select('*, recipe_tags(tag_type, tag_value)').order('created_at', { ascending: false });
   if (state.filters.diet) query = query.eq('diet', state.filters.diet);
   if (state.filters.source) query = query.eq('source', state.filters.source);
   if (state.filters.search) query = query.ilike('title', `%${state.filters.search}%`);
@@ -237,8 +237,8 @@ function updateFilter(key, value) {
 // ---------------------------------------------------------------------------
 
 async function loadRecipeDetail(id) {
-  const { data: recipe } = await supabase.from('recipes').select('*, recipe_tags(tag_type, tag_value)').eq('id', id).single();
-  const { data: ingredients } = await supabase.from('ingredients').select('*').eq('recipe_id', id).order('sort_order');
+  const { data: recipe } = await supabaseClient.from('recipes').select('*, recipe_tags(tag_type, tag_value)').eq('id', id).single();
+  const { data: ingredients } = await supabaseClient.from('ingredients').select('*').eq('recipe_id', id).order('sort_order');
   state.viewParams = { id, recipe, ingredients: ingredients || [], displaySystem: recipe?.preferred_unit_system || 'metric' };
 }
 
@@ -306,7 +306,7 @@ function setDisplaySystem(sys) {
 
 async function deleteRecipe(id) {
   if (!confirm('Delete this recipe? This cannot be undone.')) return;
-  await supabase.from('recipes').delete().eq('id', id);
+  await supabaseClient.from('recipes').delete().eq('id', id);
   goTo('browse');
 }
 
@@ -327,8 +327,8 @@ async function loadEditForm(id) {
     };
     return;
   }
-  const { data: recipe } = await supabase.from('recipes').select('*, recipe_tags(tag_type, tag_value)').eq('id', id).single();
-  const { data: ingredients } = await supabase.from('ingredients').select('*').eq('recipe_id', id).order('sort_order');
+  const { data: recipe } = await supabaseClient.from('recipes').select('*, recipe_tags(tag_type, tag_value)').eq('id', id).single();
+  const { data: ingredients } = await supabaseClient.from('ingredients').select('*').eq('recipe_id', id).order('sort_order');
   state.viewParams = {
     id,
     recipe,
@@ -510,7 +510,7 @@ async function scanWithAI() {
   statusEl.textContent = 'Reading recipe with AI…';
   try {
     const base64 = await blobToBase64(state.pendingPhoto.blob);
-    const { data, error } = await supabase.functions.invoke('extract-recipe', {
+    const { data, error } = await supabaseClient.functions.invoke('extract-recipe', {
       body: { imageBase64: base64, mimeType: state.pendingPhoto.mimeType || 'image/jpeg' }
     });
     if (error) throw error;
@@ -558,11 +558,11 @@ async function uploadStagedPhoto(recipeId) {
   if (!state.pendingPhoto) return { imageUrl: null, originalUrl: null };
   const ext = (state.pendingPhoto.mimeType || 'image/jpeg').split('/')[1] || 'jpg';
   const path = `${state.user.id}/${recipeId}/${Date.now()}.${ext}`;
-  const { error } = await supabase.storage.from(PHOTO_BUCKET).upload(path, state.pendingPhoto.blob, {
+  const { error } = await supabaseClient.storage.from(PHOTO_BUCKET).upload(path, state.pendingPhoto.blob, {
     contentType: state.pendingPhoto.mimeType, upsert: true
   });
   if (error) throw error;
-  const { data } = supabase.storage.from(PHOTO_BUCKET).getPublicUrl(path);
+  const { data } = supabaseClient.storage.from(PHOTO_BUCKET).getPublicUrl(path);
   return { imageUrl: data.publicUrl, originalUrl: data.publicUrl };
 }
 
@@ -588,17 +588,17 @@ async function saveRecipe() {
 
   let recipeId = id;
   if (id === 'new') {
-    const { data, error } = await supabase.from('recipes').insert(payload).select().single();
+    const { data, error } = await supabaseClient.from('recipes').insert(payload).select().single();
     if (error) { alert(error.message); return; }
     recipeId = data.id;
   } else {
-    const { error } = await supabase.from('recipes').update(payload).eq('id', id);
+    const { error } = await supabaseClient.from('recipes').update(payload).eq('id', id);
     if (error) { alert(error.message); return; }
   }
 
   if (state.pendingPhoto) {
     const { imageUrl, originalUrl } = await uploadStagedPhoto(recipeId);
-    await supabase.from('recipes').update({ image_url: imageUrl, original_image_url: originalUrl }).eq('id', recipeId);
+    await supabaseClient.from('recipes').update({ image_url: imageUrl, original_image_url: originalUrl }).eq('id', recipeId);
     state.pendingPhoto = null;
   }
 
@@ -615,18 +615,18 @@ function numOrNull(v) {
 }
 
 async function saveTags(recipeId) {
-  await supabase.from('recipe_tags').delete().eq('recipe_id', recipeId);
+  await supabaseClient.from('recipe_tags').delete().eq('recipe_id', recipeId);
   const mealTypes = Array.from(document.querySelectorAll('.meal-type-chk:checked')).map((c) => c.value);
   const mainIngredients = document.getElementById('f-main-ing').value.split(',').map((s) => s.trim()).filter(Boolean);
   const rows = [
     ...mealTypes.map((v) => ({ recipe_id: recipeId, tag_type: 'meal_type', tag_value: v })),
     ...mainIngredients.map((v) => ({ recipe_id: recipeId, tag_type: 'main_ingredient', tag_value: v }))
   ];
-  if (rows.length) await supabase.from('recipe_tags').insert(rows);
+  if (rows.length) await supabaseClient.from('recipe_tags').insert(rows);
 }
 
 async function saveIngredients(recipeId) {
-  await supabase.from('ingredients').delete().eq('recipe_id', recipeId);
+  await supabaseClient.from('ingredients').delete().eq('recipe_id', recipeId);
   const rows = readIngredientRowsFromDom();
   const inserts = rows.map((ing, idx) => {
     const qty = ing.quantity === '' ? null : Number(ing.quantity);
@@ -654,7 +654,7 @@ async function saveIngredients(recipeId) {
       us_cups_unit: conv?.us_cups?.unit ?? ing.unit
     };
   });
-  if (inserts.length) await supabase.from('ingredients').insert(inserts);
+  if (inserts.length) await supabaseClient.from('ingredients').insert(inserts);
 }
 
 // ---------------------------------------------------------------------------
@@ -662,7 +662,7 @@ async function saveIngredients(recipeId) {
 // ---------------------------------------------------------------------------
 
 async function loadPantry() {
-  const { data } = await supabase.from('pantry_items').select('*').order('name');
+  const { data } = await supabaseClient.from('pantry_items').select('*').order('name');
   state.pantryItems = data || [];
   state.pantryMatches = null;
 }
@@ -697,7 +697,7 @@ async function addPantryItem() {
   const nameEl = document.getElementById('new-pantry-name');
   const name = nameEl.value.trim();
   if (!name) return;
-  await supabase.from('pantry_items').insert({ name, user_id: state.user.id });
+  await supabaseClient.from('pantry_items').insert({ name, user_id: state.user.id });
   await loadPantry();
   renderPantry(document.getElementById('view-root'));
 }
@@ -706,17 +706,17 @@ async function updatePantryItem(inputEl) {
   const id = inputEl.dataset.id;
   const field = inputEl.dataset.field;
   const value = field === 'quantity' ? numOrNull(inputEl.value) : inputEl.value;
-  await supabase.from('pantry_items').update({ [field]: value }).eq('id', id);
+  await supabaseClient.from('pantry_items').update({ [field]: value }).eq('id', id);
 }
 
 async function removePantryItem(id) {
-  await supabase.from('pantry_items').delete().eq('id', id);
+  await supabaseClient.from('pantry_items').delete().eq('id', id);
   await loadPantry();
   renderPantry(document.getElementById('view-root'));
 }
 
 async function findRecipes() {
-  const { data, error } = await supabase.rpc('match_recipes_by_pantry', { p_user_id: state.user.id });
+  const { data, error } = await supabaseClient.rpc('match_recipes_by_pantry', { p_user_id: state.user.id });
   if (error) { alert(error.message); return; }
   state.pantryMatches = data || [];
   document.getElementById('pantry-matches').innerHTML = renderPantryMatches();
@@ -743,8 +743,8 @@ async function loadShoppingList() {
   const ids = Array.from(state.selectedRecipeIds);
   if (ids.length === 0) { state.shoppingList = { recipeTitles: [], lines: [] }; return; }
 
-  const { data: recipes } = await supabase.from('recipes').select('id, title').in('id', ids);
-  const { data: ingredients, error } = await supabase.from('ingredients').select('*').in('recipe_id', ids);
+  const { data: recipes } = await supabaseClient.from('recipes').select('id, title').in('id', ids);
+  const { data: ingredients, error } = await supabaseClient.from('ingredients').select('*').in('recipe_id', ids);
   if (error) { console.error(error); state.shoppingList = { recipeTitles: [], lines: [] }; render(); return; }
 
   const lines = aggregateIngredientsForShoppingList(ingredients, state.shoppingListSystem, state.densityMap);
@@ -843,13 +843,13 @@ async function shareShoppingList() {
 // ---------------------------------------------------------------------------
 
 (async function init() {
-  const { data } = await supabase.auth.getSession();
+  const { data } = await supabaseClient.auth.getSession();
   if (data.session) {
     await bootAfterAuth();
   } else {
     render();
   }
-  supabase.auth.onAuthStateChange((_event, session) => {
+  supabaseClient.auth.onAuthStateChange((_event, session) => {
     if (!session) { state.user = null; render(); }
   });
 })();

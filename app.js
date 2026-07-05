@@ -573,14 +573,18 @@ function applyExtractedRecipe(extracted) {
 
 async function uploadStagedPhoto(recipeId) {
   if (!state.pendingPhoto) return { imageUrl: null, originalUrl: null };
-  const ext = (state.pendingPhoto.mimeType || 'image/jpeg').split('/')[1] || 'jpg';
-  const path = `${state.user.id}/${recipeId}/${Date.now()}.${ext}`;
-  const { error } = await supabaseClient.storage.from(PHOTO_BUCKET).upload(path, state.pendingPhoto.blob, {
-    contentType: state.pendingPhoto.mimeType, upsert: true
+  // Uploaded via an edge function (using the service role key server-side)
+  // rather than directly from the browser — the storage-js client wasn't
+  // attaching the user's session token to Storage API requests specifically,
+  // which made direct client-side uploads fail RLS. Routing through a
+  // function that verifies the caller's JWT itself sidesteps that.
+  const base64 = await blobToBase64(state.pendingPhoto.blob);
+  const { data, error } = await supabaseClient.functions.invoke('upload-recipe-photo', {
+    body: { imageBase64: base64, mimeType: state.pendingPhoto.mimeType || 'image/jpeg', recipeId }
   });
   if (error) throw error;
-  const { data } = supabaseClient.storage.from(PHOTO_BUCKET).getPublicUrl(path);
-  return { imageUrl: data.publicUrl, originalUrl: data.publicUrl };
+  if (data?.error) throw new Error(data.error);
+  return { imageUrl: data.url, originalUrl: data.url };
 }
 
 async function saveRecipe() {

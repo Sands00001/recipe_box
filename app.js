@@ -18,7 +18,7 @@ let state = {
   viewParams: {},
   recipes: [],
   densityMap: {},
-  filters: { search: '', mealType: '', mainIngredient: '', diet: '', source: '' },
+  filters: { search: '', mealType: '', mainIngredient: '', diet: '', source: '', favoritesOnly: false },
   pantryItems: [],
   pantryMatches: null,
   cropper: null, // active Cropper.js instance while the crop modal is open
@@ -140,6 +140,7 @@ async function loadRecipes() {
   if (state.filters.diet) query = query.eq('diet', state.filters.diet);
   if (state.filters.source) query = query.eq('source', state.filters.source);
   if (state.filters.search) query = query.ilike('title', `%${state.filters.search}%`);
+  if (state.filters.favoritesOnly) query = query.eq('is_favorite', true);
   const { data, error } = await query;
   if (error) { console.error(error); state.recipes = []; return; }
 
@@ -174,6 +175,10 @@ function renderBrowse(root) {
         <option value="">Any source</option>
         ${SOURCES.map((s) => `<option value="${s}" ${f.source === s ? 'selected' : ''}>${s}</option>`).join('')}
       </select>
+      <label style="display:flex;align-items:center;gap:5px;width:auto;margin:0;white-space:nowrap">
+        <input type="checkbox" style="width:auto;min-width:0" ${f.favoritesOnly ? 'checked' : ''} onchange="updateFilter('favoritesOnly', this.checked)" />
+        <i class="ti ti-star"></i> Favourites only
+      </label>
     </div>
     ${state.recipes.length === 0 ? '<div class="empty-state"><i class="ti ti-tools-kitchen-2" style="font-size:40px"></i><p>No recipes yet — add your first one.</p></div>' : ''}
     <div class="recipe-grid">
@@ -192,6 +197,9 @@ function renderRecipeCard(r) {
       <label class="recipe-select-chk" onclick="event.stopPropagation()">
         <input type="checkbox" ${checked ? 'checked' : ''} onchange="toggleRecipeSelection('${r.id}')" />
       </label>
+      <button class="recipe-favorite-btn ${r.is_favorite ? 'is-favorite' : ''}" onclick="event.stopPropagation(); toggleFavorite('${r.id}')" title="${r.is_favorite ? 'Remove from favourites' : 'Add to favourites'}">
+        <i class="${r.is_favorite ? 'ti ti-star-filled' : 'ti ti-star'}"></i>
+      </button>
       ${r.image_url ? `<img src="${escapeHtml(r.image_url)}" alt="">` : `<div class="no-image"><i class="ti ti-tools-kitchen-2"></i></div>`}
       <div class="recipe-card-body">
         <h3>${escapeHtml(r.title)}</h3>
@@ -223,6 +231,20 @@ function toggleRecipeSelection(id) {
   if (state.selectedRecipeIds.has(id)) state.selectedRecipeIds.delete(id);
   else state.selectedRecipeIds.add(id);
   renderBrowse(document.getElementById('view-root'));
+}
+
+async function toggleFavorite(id) {
+  const recipe = state.recipes.find((r) => r.id === id);
+  if (!recipe) return;
+  const next = !recipe.is_favorite;
+  recipe.is_favorite = next; // optimistic update, re-render immediately
+  renderBrowse(document.getElementById('view-root'));
+  const { error } = await supabaseClient.from('recipes').update({ is_favorite: next }).eq('id', id);
+  if (error) {
+    recipe.is_favorite = !next; // revert on failure
+    renderBrowse(document.getElementById('view-root'));
+    alert(`Could not update favourite: ${error.message}`);
+  }
 }
 
 function clearSelection() {
@@ -281,6 +303,8 @@ function renderDetail(root) {
           </div>` : ''}
         <div class="field-row" style="margin-top:10px">
           <button onclick="goTo('edit', {id:'${recipe.id}'})"><i class="ti ti-edit"></i> Edit</button>
+          <button onclick="toggleFavoriteDetail('${recipe.id}')"><i class="${recipe.is_favorite ? 'ti ti-star-filled' : 'ti ti-star'}"></i> ${recipe.is_favorite ? 'Favourited' : 'Add to favourites'}</button>
+          <button onclick="createShoppingListForRecipe('${recipe.id}')"><i class="ti ti-shopping-cart"></i> Create shopping list</button>
           <button class="btn-danger" onclick="deleteRecipe('${recipe.id}')"><i class="ti ti-trash"></i> Delete</button>
         </div>
       </div>
@@ -320,6 +344,26 @@ async function deleteRecipe(id) {
   if (!confirm('Delete this recipe? This cannot be undone.')) return;
   await supabaseClient.from('recipes').delete().eq('id', id);
   goTo('browse');
+}
+
+async function toggleFavoriteDetail(id) {
+  const recipe = state.viewParams.recipe;
+  const next = !recipe.is_favorite;
+  recipe.is_favorite = next;
+  renderDetail(document.getElementById('view-root'));
+  const { error } = await supabaseClient.from('recipes').update({ is_favorite: next }).eq('id', id);
+  if (error) {
+    recipe.is_favorite = !next;
+    renderDetail(document.getElementById('view-root'));
+    alert(`Could not update favourite: ${error.message}`);
+  }
+}
+
+// Quick single-recipe shopping list, straight from the detail page — reuses
+// the same selection Set and shopping-list view as ticking cards in Browse.
+function createShoppingListForRecipe(id) {
+  state.selectedRecipeIds = new Set([id]);
+  goTo('shopping-list');
 }
 
 // ---------------------------------------------------------------------------
@@ -534,19 +578,48 @@ function removePhoto(idx) {
   document.getElementById('scan-btn').disabled = photos.length === 0;
 }
 
-function handlePhotoSelected(event) {
+// iPhone photos store a rotation flag (EXIF orientation) rather than
+// rotating the actual pixel data — a portrait card shot in one hand
+// position can be saved as "landscape pixels + rotate 90°" internally.
+// Browsers usually display a plain <img> correctly using that flag, but
+// Cropper.js reads the raw bytes itself and can disagree with the browser
+// about it, so the crop box ends up sized for the wrong orientation. Baking
+// the correct orientation into the actual pixels up front — before Cropper
+// or our fallback ever sees the image — avoids that mismatch entirely.
+async function correctImageOrientation(file) {
+  if (typeof createImageBitmap !== 'function') return null;
+  try {
+    const bitmap = await createImageBitmap(file, { imageOrientation: 'from-image' });
+    const canvas = document.createElement('canvas');
+    canvas.width = bitmap.width;
+    canvas.height = bitmap.height;
+    canvas.getContext('2d').drawImage(bitmap, 0, 0);
+    return canvas.toDataURL(file.type === 'image/png' ? 'image/png' : 'image/jpeg', 0.92);
+  } catch (err) {
+    console.error('Orientation correction failed, using original file:', err);
+    return null;
+  }
+}
+
+async function handlePhotoSelected(event) {
   const file = event.target.files[0];
   if (!file) return;
+  event.target.value = ''; // allow re-selecting the same file later
   if (file.type === 'application/pdf') {
     // No cropping for PDFs — Claude reads the document as-is, so stage it directly.
     stagePdfBlob(file);
-    event.target.value = '';
     return;
   }
+  const correctedDataUrl = await correctImageOrientation(file);
+  if (correctedDataUrl) {
+    openCropModal(correctedDataUrl, 'image/jpeg');
+    return;
+  }
+  // Fallback for browsers without createImageBitmap's orientation option —
+  // rotate buttons in the crop modal still let you fix it manually.
   const reader = new FileReader();
   reader.onload = () => openCropModal(reader.result, file.type);
   reader.readAsDataURL(file);
-  event.target.value = ''; // allow re-selecting the same file later
 }
 
 function stagePdfBlob(file) {

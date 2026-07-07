@@ -578,48 +578,19 @@ function removePhoto(idx) {
   document.getElementById('scan-btn').disabled = photos.length === 0;
 }
 
-// iPhone photos store a rotation flag (EXIF orientation) rather than
-// rotating the actual pixel data — a portrait card shot in one hand
-// position can be saved as "landscape pixels + rotate 90°" internally.
-// Browsers usually display a plain <img> correctly using that flag, but
-// Cropper.js reads the raw bytes itself and can disagree with the browser
-// about it, so the crop box ends up sized for the wrong orientation. Baking
-// the correct orientation into the actual pixels up front — before Cropper
-// or our fallback ever sees the image — avoids that mismatch entirely.
-async function correctImageOrientation(file) {
-  if (typeof createImageBitmap !== 'function') return null;
-  try {
-    const bitmap = await createImageBitmap(file, { imageOrientation: 'from-image' });
-    const canvas = document.createElement('canvas');
-    canvas.width = bitmap.width;
-    canvas.height = bitmap.height;
-    canvas.getContext('2d').drawImage(bitmap, 0, 0);
-    return canvas.toDataURL(file.type === 'image/png' ? 'image/png' : 'image/jpeg', 0.92);
-  } catch (err) {
-    console.error('Orientation correction failed, using original file:', err);
-    return null;
-  }
-}
-
-async function handlePhotoSelected(event) {
+function handlePhotoSelected(event) {
   const file = event.target.files[0];
   if (!file) return;
-  event.target.value = ''; // allow re-selecting the same file later
   if (file.type === 'application/pdf') {
     // No cropping for PDFs — Claude reads the document as-is, so stage it directly.
     stagePdfBlob(file);
+    event.target.value = '';
     return;
   }
-  const correctedDataUrl = await correctImageOrientation(file);
-  if (correctedDataUrl) {
-    openCropModal(correctedDataUrl, 'image/jpeg');
-    return;
-  }
-  // Fallback for browsers without createImageBitmap's orientation option —
-  // rotate buttons in the crop modal still let you fix it manually.
   const reader = new FileReader();
   reader.onload = () => openCropModal(reader.result, file.type);
   reader.readAsDataURL(file);
+  event.target.value = ''; // allow re-selecting the same file later
 }
 
 function stagePdfBlob(file) {

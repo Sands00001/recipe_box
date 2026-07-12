@@ -156,9 +156,13 @@ ingredients with quantities/units, prep/cook time, oven temperature
 (°C/°F/gas mark), method, and best-guess meal type / main ingredients / diet.
 The file picker on the edit form also accepts PDFs (e.g. an exported recipe
 or a scanned document) — a PDF can be ticked for scanning like a photo, but
-can't be the card thumbnail, since there's no single image to show. Everything
-it fills in is editable before you save — it's a first draft, not the final
-word, especially on handwriting.
+can't be the card thumbnail, since there's no single image to show. There's
+also a "paste recipe text" box on the same form — handy for a recipe you've
+found on a web page: copy the text and paste it in instead of taking a
+screenshot or saving a PDF, and Scan with AI reads that too (you can combine
+pasted text with photos in the same scan if you want). Everything it fills in
+is editable before you save — it's a first draft, not the final word,
+especially on handwriting.
 
 **Meal planner.** The Planner view is a Monday–Sunday grid with a
 breakfast/lunch/dinner/dessert row per day; pick a recipe from the dropdown

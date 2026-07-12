@@ -68,6 +68,7 @@ function render() {
 async function goTo(view, params = {}) {
   state.currentView = view;
   state.viewParams = params;
+  updateUrlForView(view, params);
   if (view === 'browse') await loadRecipes();
   if (view === 'detail') await loadRecipeDetail(params.id);
   if (view === 'edit') await loadEditForm(params.id);
@@ -76,6 +77,34 @@ async function goTo(view, params = {}) {
   if (view === 'planner') await loadPlanner(params.weekStart || formatDateISO(getMonday(new Date())));
   render();
 }
+
+// ---------------------------------------------------------------------------
+// Deep linking — sharing a recipe (e.g. the phone's native Share icon on the
+// detail page) previously just shared the site's bare root URL, since the
+// app never reflected which recipe you were viewing in the address bar.
+// Reopening that link then bounced to sign-in and landed on Browse instead
+// of the recipe. Reflecting the current recipe as a URL hash (no server-side
+// routing needed on static hosting) and re-reading it after sign-in fixes
+// both halves of that.
+// ---------------------------------------------------------------------------
+
+function updateUrlForView(view, params) {
+  const newHash = view === 'detail' && params.id ? `#/detail/${params.id}` : '';
+  if (location.hash !== newHash) {
+    history.replaceState(null, '', newHash || (location.pathname + location.search));
+  }
+}
+
+function parseDeepLinkFromHash() {
+  const m = location.hash.match(/^#\/detail\/([0-9a-f-]+)$/i);
+  return m ? { view: 'detail', id: m[1] } : null;
+}
+
+// Captured once when the script first loads (i.e. from whatever URL the
+// share/bookmark/link opened), then consumed the first time we successfully
+// sign in — whether that's an existing session or a fresh sign-in submitted
+// from the login screen.
+let pendingDeepLink = parseDeepLinkFromHash();
 
 // ---------------------------------------------------------------------------
 // Auth
@@ -128,7 +157,13 @@ async function bootAfterAuth() {
   state.user = data.user;
   const { data: densityRows } = await supabaseClient.from('ingredient_density_reference').select('*');
   state.densityMap = buildDensityMap(densityRows);
-  goTo('browse');
+  if (pendingDeepLink) {
+    const link = pendingDeepLink;
+    pendingDeepLink = null;
+    goTo(link.view, { id: link.id });
+  } else {
+    goTo('browse');
+  }
 }
 
 // ---------------------------------------------------------------------------
@@ -161,12 +196,12 @@ function renderBrowse(root) {
   const f = state.filters;
   root.innerHTML = `
     <div class="filters">
-      <input placeholder="Search title…" value="${escapeHtml(f.search)}" oninput="updateFilter('search', this.value)" />
+      <input id="filter-search" placeholder="Search title…" value="${escapeHtml(f.search)}" oninput="updateFilter('search', this.value)" />
       <select onchange="updateFilter('mealType', this.value)">
         <option value="">All meal types</option>
         ${MEAL_TYPES.map((m) => `<option value="${m}" ${f.mealType === m ? 'selected' : ''}>${m}</option>`).join('')}
       </select>
-      <input placeholder="Main ingredient…" value="${escapeHtml(f.mainIngredient)}" oninput="updateFilter('mainIngredient', this.value)" />
+      <input id="filter-main-ingredient" placeholder="Main ingredient…" value="${escapeHtml(f.mainIngredient)}" oninput="updateFilter('mainIngredient', this.value)" />
       <select onchange="updateFilter('diet', this.value)">
         <option value="">Any diet</option>
         ${DIETS.map((d) => `<option value="${d}" ${f.diet === d ? 'selected' : ''}>${d}</option>`).join('')}
@@ -252,9 +287,31 @@ function clearSelection() {
   renderBrowse(document.getElementById('view-root'));
 }
 
+// Typing filters (search / main ingredient) re-render the whole filters bar
+// on every keystroke, which recreates the <input> element and drops focus —
+// debouncing avoids a query per keystroke, and restoring focus + cursor
+// position afterwards means you can keep typing without re-clicking the box.
+let filterDebounceTimer = null;
 function updateFilter(key, value) {
   state.filters[key] = value;
-  loadRecipes().then(() => renderBrowse(document.getElementById('view-root')));
+  const active = document.activeElement;
+  const activeId = active ? active.id : null;
+  const selStart = active && typeof active.selectionStart === 'number' ? active.selectionStart : null;
+  clearTimeout(filterDebounceTimer);
+  filterDebounceTimer = setTimeout(() => {
+    loadRecipes().then(() => {
+      renderBrowse(document.getElementById('view-root'));
+      if (activeId) {
+        const el = document.getElementById(activeId);
+        if (el) {
+          el.focus();
+          if (selStart != null && el.setSelectionRange) {
+            try { el.setSelectionRange(selStart, selStart); } catch (e) {}
+          }
+        }
+      }
+    });
+  }, 300);
 }
 
 // ---------------------------------------------------------------------------
@@ -380,7 +437,7 @@ async function loadEditForm(id) {
         image_url: '', original_image_url: ''
       },
       mealTypes: [], mainIngredients: '', ingredients: [emptyIngredientRow()],
-      photos: [], originalPhotoIds: []
+      photos: [], originalPhotoIds: [], pasteText: ''
     };
     return;
   }
@@ -403,7 +460,8 @@ async function loadEditForm(id) {
       name: i.name, quantity: i.original_quantity, unit: i.original_unit, notes: i.notes
     })),
     photos,
-    originalPhotoIds: photos.map((p) => p.id)
+    originalPhotoIds: photos.map((p) => p.id),
+    pasteText: ''
   };
 }
 
@@ -412,7 +470,7 @@ function emptyIngredientRow() {
 }
 
 function renderEdit(root) {
-  const { recipe, mealTypes, mainIngredients, ingredients, photos, id } = state.viewParams;
+  const { recipe, mealTypes, mainIngredients, ingredients, photos, id, pasteText } = state.viewParams;
   root.innerHTML = `
     <button onclick="goTo('browse')"><i class="ti ti-arrow-left"></i> Back</button>
     <h2 style="margin-top:14px">${id === 'new' ? 'Add recipe' : 'Edit recipe'}</h2>
@@ -422,8 +480,12 @@ function renderEdit(root) {
       <input type="file" accept="image/*,application/pdf" onchange="handlePhotoSelected(event)" />
       <p style="font-size:12px;color:var(--text-muted);margin:6px 0 0">A PDF can be included in an AI scan, but only a photo can be set as the thumbnail.</p>
       <div id="photo-list">${renderPhotoList(photos)}</div>
+
+      <label style="margin-top:12px">Or paste recipe text (e.g. copied from a web page)</label>
+      <textarea id="paste-text" rows="6" placeholder="Paste the ingredients and method here…" oninput="state.viewParams.pasteText = this.value">${escapeHtml(pasteText || '')}</textarea>
+
       <div class="field-row" style="margin-top:8px">
-        <button id="scan-btn" onclick="scanWithAI()" ${photos.length ? '' : 'disabled'}><i class="ti ti-sparkles"></i> Scan selected photo(s) with AI to prefill</button>
+        <button id="scan-btn" onclick="scanWithAI()"><i class="ti ti-sparkles"></i> Scan photo(s) / pasted text with AI to prefill</button>
       </div>
       <div id="scan-status" class="error-text"></div>
     </div>
@@ -715,7 +777,11 @@ async function resizeImageForScan(blob, maxDim = 1024, quality = 0.7) {
 async function scanWithAI() {
   const photos = state.viewParams.photos;
   const checkedIdx = Array.from(document.querySelectorAll('.photo-scan-chk:checked')).map((c) => Number(c.dataset.idx));
-  if (checkedIdx.length === 0) { alert('Tick "Include in scan" on at least one photo first.'); return; }
+  const pasteText = (document.getElementById('paste-text')?.value || '').trim();
+  if (checkedIdx.length === 0 && !pasteText) {
+    alert('Tick "Include in scan" on at least one photo, or paste some recipe text, first.');
+    return;
+  }
 
   const statusEl = document.getElementById('scan-status');
   statusEl.textContent = 'Reading recipe with AI…';
@@ -737,7 +803,9 @@ async function scanWithAI() {
         images.push({ imageBase64: await blobToBase64(scanBlob), mimeType: 'image/jpeg' });
       }
     }
-    const { data, error } = await supabaseClient.functions.invoke('extract-recipe', { body: { images } });
+    const { data, error } = await supabaseClient.functions.invoke('extract-recipe', {
+      body: { images, text: pasteText || undefined }
+    });
     if (error) throw await describeFunctionError(error);
     applyExtractedRecipe(data.data);
     statusEl.textContent = 'Prefilled — please check the details before saving.';
@@ -745,7 +813,7 @@ async function scanWithAI() {
     const hint = /send a request/i.test(err.message || '')
       ? ' (the request didn\'t reach the server — check your connection, or try scanning fewer photos at once)'
       : '';
-    statusEl.textContent = `Could not read the photo(s): ${err.message || err}${hint}`;
+    statusEl.textContent = `Could not read the recipe: ${err.message || err}${hint}`;
   }
 }
 

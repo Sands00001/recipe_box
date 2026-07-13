@@ -129,10 +129,13 @@ Each recipe also has its own `preferred_unit_system` so the detail view opens
 showing the units you actually want for that recipe, with a toggle to switch.
 
 **Photo capture, cropping and rotation.** The file input accepts a live camera
-capture or an existing photo, then opens a crop tool (Cropper.js) with rotate
-left/right buttons before it's attached — handy for a photo taken sideways.
-A recipe can have any number of photos (e.g. front and back of a Gousto card,
-or two cookbook pages): each one shows in a small list on the edit form where
+capture or an existing photo (or several at once — selecting multiple files
+from the same folder queues each photo for its own crop step, one after the
+other, and adds any PDFs straight away), then opens a crop tool (Cropper.js)
+with rotate left/right buttons before it's attached — handy for a photo taken
+sideways. A recipe can have any number of photos (e.g. front and back of a
+Gousto card, or two cookbook pages): each one shows in a small list on the
+edit form where
 you pick which single photo is the **thumbnail** (shown on cards and the
 detail header) and tick which photo(s) to **include in the next AI scan** —
 the thumbnail and the scan photos don't have to be the same picture, and a
@@ -165,13 +168,18 @@ is editable before you save — it's a first draft, not the final word,
 especially on handwriting.
 
 **Meal planner.** The Planner view is a Monday–Sunday grid with a
-breakfast/lunch/dinner/dessert row per day; pick a recipe from the dropdown
-in any empty slot to assign it, or remove one with the × button. Use the
-arrows to flip to the previous/next week. A "Create shopping list from this
-week" button feeds every distinct recipe assigned that week straight into
-the same shopping-list feature described above. (Sending the plan to your
-phone's calendar isn't built yet — that's a separate piece for later if you
-want it.)
+breakfast/lunch/dinner/dessert row per day. Clicking "+ Add" on any empty
+slot — or the general "Add a meal" button above the grid — opens a filterable
+picker instead of a long alphabetical list: narrow by meal type, main
+ingredient, or diet (using the same tags you already add to recipes), then
+click Add (or double-click) on the recipe you want. The picker stays open
+after each pick so you can plan several meals in one sitting, and its Day/
+Meal dropdowns let you redirect each pick to a different slot without
+reopening it. Remove an assigned meal with the × button. Use the arrows to
+flip to the previous/next week. A "Create shopping list from this week"
+button feeds every distinct recipe assigned that week straight into the same
+shopping-list feature described above. (Sending the plan to your phone's
+calendar isn't built yet — that's a separate piece for later if you want it.)
 
 **Pantry search.** The "What can I make?" view lets you list what you've got
 on hand; `match_recipes_by_pantry` (a Postgres function using fuzzy text

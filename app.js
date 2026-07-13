@@ -22,9 +22,11 @@ let state = {
   pantryItems: [],
   pantryMatches: null,
   cropper: null, // active Cropper.js instance while the crop modal is open
+  photoQueue: [], // images picked in a multi-select that still need cropping, one at a time
   selectedRecipeIds: new Set(), // recipes ticked in Browse, for the shopping list
   shoppingList: null, // { recipeTitles, system, lines } once generated
-  shoppingListSystem: 'metric'
+  shoppingListSystem: 'metric',
+  mealPicker: null // { dateISO, slot, recipes, filters, status } while the planner's meal picker modal is open
 };
 
 const app = document.getElementById('app');
@@ -477,8 +479,8 @@ function renderEdit(root) {
 
     <div class="field">
       <label>Photos or PDFs (front/back of a card, multiple pages, etc.)</label>
-      <input type="file" accept="image/*,application/pdf" onchange="handlePhotoSelected(event)" />
-      <p style="font-size:12px;color:var(--text-muted);margin:6px 0 0">A PDF can be included in an AI scan, but only a photo can be set as the thumbnail.</p>
+      <input type="file" accept="image/*,application/pdf" multiple onchange="handlePhotoSelected(event)" />
+      <p style="font-size:12px;color:var(--text-muted);margin:6px 0 0">You can select several files at once (e.g. everything in one folder) — each photo opens its own crop step in turn, PDFs are added straight away. A PDF can be included in an AI scan, but only a photo can be set as the thumbnail.</p>
       <div id="photo-list">${renderPhotoList(photos)}</div>
 
       <label style="margin-top:12px">Or paste recipe text (e.g. copied from a web page)</label>
@@ -640,19 +642,33 @@ function removePhoto(idx) {
   document.getElementById('scan-btn').disabled = photos.length === 0;
 }
 
+// Selecting multiple files at once (the picker has `multiple` set) stages
+// every PDF immediately (no cropping needed) and queues every photo to be
+// cropped one at a time — the crop tool is inherently a one-photo-at-a-time
+// UI, so each queued photo opens its own crop modal right after the previous
+// one is confirmed or cancelled, instead of forcing you back into the file
+// picker for each one individually.
 function handlePhotoSelected(event) {
-  const file = event.target.files[0];
-  if (!file) return;
-  if (file.type === 'application/pdf') {
-    // No cropping for PDFs — Claude reads the document as-is, so stage it directly.
-    stagePdfBlob(file);
-    event.target.value = '';
-    return;
+  const files = Array.from(event.target.files || []);
+  event.target.value = ''; // allow re-selecting the same file(s) later
+  if (files.length === 0) return;
+  for (const file of files) {
+    if (file.type === 'application/pdf') {
+      stagePdfBlob(file);
+    } else {
+      state.photoQueue.push(file);
+    }
   }
+  processNextQueuedPhoto();
+}
+
+function processNextQueuedPhoto() {
+  if (state._cropModal) return; // a crop is already open; it'll call this again once it's done
+  const next = state.photoQueue.shift();
+  if (!next) return;
   const reader = new FileReader();
-  reader.onload = () => openCropModal(reader.result, file.type);
-  reader.readAsDataURL(file);
-  event.target.value = ''; // allow re-selecting the same file later
+  reader.onload = () => openCropModal(reader.result, next.type);
+  reader.readAsDataURL(next);
 }
 
 function stagePdfBlob(file) {
@@ -666,11 +682,12 @@ function stagePdfBlob(file) {
 }
 
 function openCropModal(dataUrl, mimeType) {
+  const remaining = state.photoQueue.length;
   const modal = document.createElement('div');
   modal.className = 'crop-modal';
   modal.innerHTML = `
     <div class="crop-modal-inner">
-      <p style="margin-top:0;font-size:13px;color:var(--text-muted)">Drag the corners to crop and use the rotate buttons if it's sideways, then click <strong>Use this crop</strong> below — the photo isn't attached until you do.</p>
+      <p style="margin-top:0;font-size:13px;color:var(--text-muted)">Drag the corners to crop and use the rotate buttons if it's sideways, then click <strong>Use this crop</strong> below — the photo isn't attached until you do.${remaining ? ` (${remaining} more photo${remaining === 1 ? '' : 's'} queued after this one.)` : ''}</p>
       <div class="crop-image-wrap"><img id="crop-target" src="${dataUrl}"></div>
       <div class="field-row">
         <button type="button" onclick="rotateCrop(-90)"><i class="ti ti-rotate"></i> Rotate left</button>
@@ -711,7 +728,9 @@ function rotateCrop(deg) {
 function cancelCrop() {
   if (state.cropper) state.cropper.destroy();
   state._cropModal.remove();
+  state._cropModal = null;
   state.cropper = null;
+  processNextQueuedPhoto(); // move on to the next queued photo, if any
 }
 
 function loadImageElement(src) {
@@ -1234,18 +1253,16 @@ async function loadPlanner(weekStartISO) {
     .lte('plan_date', weekDates[6]);
   if (error) console.error(error);
 
-  const { data: allRecipes } = await supabaseClient.from('recipes').select('id, title').order('title');
-
   const entryMap = {};
   (entries || []).forEach((e) => {
     entryMap[`${e.plan_date}|${e.meal_slot}`] = { id: e.id, recipeId: e.recipe_id, title: e.recipes?.title || '(deleted recipe)' };
   });
 
-  state.viewParams = { weekStart: weekStartISO, weekDates, entryMap, allRecipes: allRecipes || [] };
+  state.viewParams = { weekStart: weekStartISO, weekDates, entryMap };
 }
 
 function renderPlanner(root) {
-  const { weekDates, entryMap, allRecipes } = state.viewParams;
+  const { weekDates, entryMap } = state.viewParams;
   const dayNames = ['Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat', 'Sun'];
   const distinctRecipeIds = new Set(Object.values(entryMap).map((e) => e.recipeId));
 
@@ -1266,12 +1283,13 @@ function renderPlanner(root) {
         ${weekDates.map((d, i) => `<div class="planner-cell planner-header">${dayNames[i]}<br>${formatDateShort(d)}</div>`).join('')}
         ${PLAN_SLOTS.map((slot) => `
           <div class="planner-cell planner-slot-label">${capitalizeFirst(slot)}</div>
-          ${weekDates.map((d) => renderPlannerCell(d, slot, entryMap[`${d}|${slot}`], allRecipes)).join('')}
+          ${weekDates.map((d) => renderPlannerCell(d, slot, entryMap[`${d}|${slot}`])).join('')}
         `).join('')}
       </div>
     </div>
 
     <div class="field-row" style="margin-top:16px">
+      <button onclick="openMealPicker()"><i class="ti ti-plus"></i> Add a meal</button>
       <button class="btn-primary" onclick="createShoppingListFromWeek()" ${distinctRecipeIds.size ? '' : 'disabled'}>
         <i class="ti ti-shopping-cart"></i> Create shopping list from this week
       </button>
@@ -1279,7 +1297,7 @@ function renderPlanner(root) {
   `;
 }
 
-function renderPlannerCell(dateISO, slot, entry, allRecipes) {
+function renderPlannerCell(dateISO, slot, entry) {
   if (entry) {
     return `
       <div class="planner-cell planner-filled">
@@ -1290,10 +1308,7 @@ function renderPlannerCell(dateISO, slot, entry, allRecipes) {
   }
   return `
     <div class="planner-cell">
-      <select onchange="assignPlanEntry('${dateISO}','${slot}', this.value)">
-        <option value="">+ Add</option>
-        ${allRecipes.map((r) => `<option value="${r.id}">${escapeHtml(r.title)}</option>`).join('')}
-      </select>
+      <button style="width:100%;justify-content:center" onclick="openMealPicker('${dateISO}','${slot}')"><i class="ti ti-plus"></i> Add</button>
     </div>
   `;
 }
@@ -1330,6 +1345,138 @@ function createShoppingListFromWeek() {
   if (ids.size === 0) { alert('No meals planned for this week yet.'); return; }
   state.selectedRecipeIds = ids;
   goTo('shopping-list');
+}
+
+// ---------------------------------------------------------------------------
+// Meal picker — a filterable recipe picker for the planner, replacing what
+// used to be a single <select> listing every recipe alphabetically (which
+// gets unwieldy fast as the recipe count grows). Opens as a modal appended
+// to <body> (same pattern as the crop tool) so it survives the planner grid
+// behind it being re-rendered after each pick, and stays open so several
+// meals can be added in one sitting instead of reopening it per cell.
+// ---------------------------------------------------------------------------
+
+async function openMealPicker(dateISO, slot) {
+  const { weekDates } = state.viewParams;
+  const { data: recipes, error } = await supabaseClient
+    .from('recipes')
+    .select('id, title, diet, recipe_tags(tag_type, tag_value)')
+    .order('title');
+  if (error) { alert(`Could not load recipes: ${error.message}`); return; }
+
+  state.mealPicker = {
+    dateISO: dateISO || weekDates[0],
+    slot: slot || PLAN_SLOTS[0],
+    recipes: recipes || [],
+    // Opening from a specific cell (e.g. the Dessert column) defaults the
+    // meal-type filter to match, since that's almost always what you want —
+    // the filter is a normal visible dropdown, so it's one click to clear.
+    filters: { mealType: slot && MEAL_TYPES.includes(slot) ? slot : '', mainIngredient: '', diet: '' }
+  };
+  renderMealPickerModal();
+}
+
+function closeMealPicker() {
+  if (state._mealPickerModal) state._mealPickerModal.remove();
+  state._mealPickerModal = null;
+  state.mealPicker = null;
+}
+
+function renderMealPickerModal() {
+  if (state._mealPickerModal) state._mealPickerModal.remove();
+  const { weekDates } = state.viewParams;
+  const dayNames = ['Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat', 'Sun'];
+  const mp = state.mealPicker;
+
+  const modal = document.createElement('div');
+  modal.className = 'crop-modal';
+  modal.innerHTML = `
+    <div class="crop-modal-inner" style="width:min(560px, 94vw)">
+      <div class="field-row" style="justify-content:space-between;align-items:center;margin-bottom:2px">
+        <h3 style="margin:0"><i class="ti ti-calendar-plus"></i> Add a meal</h3>
+        <button class="btn-icon" onclick="closeMealPicker()"><i class="ti ti-x"></i></button>
+      </div>
+      <div class="field-row">
+        <div class="field"><label>Day</label>
+          <select id="mp-day">
+            ${weekDates.map((d, i) => `<option value="${d}" ${d === mp.dateISO ? 'selected' : ''}>${dayNames[i]} ${formatDateShort(d)}</option>`).join('')}
+          </select>
+        </div>
+        <div class="field"><label>Meal</label>
+          <select id="mp-slot">
+            ${PLAN_SLOTS.map((s) => `<option value="${s}" ${s === mp.slot ? 'selected' : ''}>${capitalizeFirst(s)}</option>`).join('')}
+          </select>
+        </div>
+      </div>
+      <div class="field-row">
+        <div class="field"><label>Meal type</label>
+          <select onchange="updateMealPickerFilter('mealType', this.value)">
+            <option value="">All meal types</option>
+            ${MEAL_TYPES.map((m) => `<option value="${m}" ${mp.filters.mealType === m ? 'selected' : ''}>${m}</option>`).join('')}
+          </select>
+        </div>
+        <div class="field"><label>Main ingredient</label>
+          <input placeholder="e.g. chicken" oninput="updateMealPickerFilter('mainIngredient', this.value)" />
+        </div>
+        <div class="field"><label>Diet</label>
+          <select onchange="updateMealPickerFilter('diet', this.value)">
+            <option value="">Any diet</option>
+            ${DIETS.map((d) => `<option value="${d}" ${mp.filters.diet === d ? 'selected' : ''}>${d}</option>`).join('')}
+          </select>
+        </div>
+      </div>
+      <div id="meal-picker-status" class="error-text" style="min-height:16px"></div>
+      <div id="meal-picker-results" style="max-height:320px;overflow-y:auto;border-top:1px solid var(--border);margin-top:4px"></div>
+    </div>
+  `;
+  document.body.appendChild(modal);
+  state._mealPickerModal = modal;
+  renderMealPickerResults();
+}
+
+function filterMealPickerRecipes() {
+  const { recipes, filters } = state.mealPicker;
+  const needle = filters.mainIngredient.trim().toLowerCase();
+  return recipes.filter((r) => {
+    if (filters.mealType && !r.recipe_tags.some((t) => t.tag_type === 'meal_type' && t.tag_value === filters.mealType)) return false;
+    if (filters.diet && r.diet !== filters.diet) return false;
+    if (needle && !r.recipe_tags.some((t) => t.tag_type === 'main_ingredient' && t.tag_value.toLowerCase().includes(needle))) return false;
+    return true;
+  });
+}
+
+// Only rebuilds the results list, not the whole modal — the filter inputs
+// above are left alone so typing in "Main ingredient" doesn't lose focus
+// the same way the old Browse search box used to (see updateFilter).
+function updateMealPickerFilter(key, value) {
+  state.mealPicker.filters[key] = value;
+  renderMealPickerResults();
+}
+
+function renderMealPickerResults() {
+  const results = document.getElementById('meal-picker-results');
+  if (!results) return;
+  const matches = filterMealPickerRecipes();
+  results.innerHTML = matches.length
+    ? matches.map((r) => `
+        <div style="display:flex;justify-content:space-between;align-items:center;gap:10px;padding:7px 2px;border-bottom:1px solid var(--border);cursor:pointer" ondblclick="pickMealPickerRecipe('${r.id}')">
+          <span>${escapeHtml(r.title)}${r.diet !== 'none' ? ` <span class="tag diet-${r.diet}">${r.diet}</span>` : ''}</span>
+          <button onclick="pickMealPickerRecipe('${r.id}')">Add</button>
+        </div>
+      `).join('')
+    : '<p style="color:var(--text-muted);font-size:13px;padding:10px 2px">No recipes match those filters.</p>';
+}
+
+async function pickMealPickerRecipe(recipeId) {
+  const dateISO = document.getElementById('mp-day').value;
+  const slot = document.getElementById('mp-slot').value;
+  const recipe = state.mealPicker.recipes.find((r) => r.id === recipeId);
+  await assignPlanEntry(dateISO, slot, recipeId);
+  const statusEl = document.getElementById('meal-picker-status');
+  if (statusEl) {
+    statusEl.textContent = `Added "${recipe?.title || 'recipe'}" to ${capitalizeFirst(slot)} on ${formatDateShort(dateISO)}. Pick another, or close when done.`;
+    statusEl.style.color = 'var(--success)';
+  }
 }
 
 // ---------------------------------------------------------------------------

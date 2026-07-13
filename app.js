@@ -363,6 +363,7 @@ function renderDetail(root) {
         <div class="field-row" style="margin-top:10px">
           <button onclick="goTo('edit', {id:'${recipe.id}'})"><i class="ti ti-edit"></i> Edit</button>
           <button onclick="toggleFavoriteDetail('${recipe.id}')"><i class="${recipe.is_favorite ? 'ti ti-star-filled' : 'ti ti-star'}"></i> ${recipe.is_favorite ? 'Favourited' : 'Add to favourites'}</button>
+          <button onclick="openAddToPlannerModal('${recipe.id}')"><i class="ti ti-calendar-plus"></i> Add to Planner</button>
           <button onclick="createShoppingListForRecipe('${recipe.id}')"><i class="ti ti-shopping-cart"></i> Create shopping list</button>
           <button class="btn-danger" onclick="deleteRecipe('${recipe.id}')"><i class="ti ti-trash"></i> Delete</button>
         </div>
@@ -423,6 +424,66 @@ async function toggleFavoriteDetail(id) {
 function createShoppingListForRecipe(id) {
   state.selectedRecipeIds = new Set([id]);
   goTo('shopping-list');
+}
+
+// "Add to Planner" from a recipe's detail page — a lighter-weight version of
+// the planner's meal picker: the recipe is already chosen, so this just
+// prompts for a date (any date, not only the currently-viewed planner week)
+// and a meal slot. Deliberately doesn't reuse assignPlanEntry(), since that
+// function reloads/re-renders the planner view, which would clobber the
+// detail page we're actually standing on — this does its own upsert instead.
+function openAddToPlannerModal(recipeId) {
+  const title = state.viewParams.recipe?.title || 'this recipe';
+  const modal = document.createElement('div');
+  modal.className = 'crop-modal';
+  modal.innerHTML = `
+    <div class="crop-modal-inner" style="width:min(420px, 92vw)">
+      <div class="field-row" style="justify-content:space-between;align-items:center;margin-bottom:2px">
+        <h3 style="margin:0"><i class="ti ti-calendar-plus"></i> Add to Planner</h3>
+        <button class="btn-icon" onclick="closeAddToPlannerModal()"><i class="ti ti-x"></i></button>
+      </div>
+      <p style="margin:0 0 10px;font-size:13px;color:var(--text-muted)">${escapeHtml(title)}</p>
+      <div class="field-row">
+        <div class="field"><label>Date</label><input type="date" id="atp-date" value="${formatDateISO(new Date())}" /></div>
+        <div class="field"><label>Meal</label>
+          <select id="atp-slot">${PLAN_SLOTS.map((s) => `<option value="${s}">${capitalizeFirst(s)}</option>`).join('')}</select>
+        </div>
+      </div>
+      <div id="atp-status" class="error-text" style="min-height:16px"></div>
+      <div class="field-row" style="margin-top:6px">
+        <button class="btn-primary" onclick="confirmAddToPlanner('${recipeId}')"><i class="ti ti-check"></i> Add to Planner</button>
+        <button onclick="closeAddToPlannerModal()">Close</button>
+      </div>
+    </div>
+  `;
+  document.body.appendChild(modal);
+  state._addToPlannerModal = modal;
+}
+
+function closeAddToPlannerModal() {
+  if (state._addToPlannerModal) state._addToPlannerModal.remove();
+  state._addToPlannerModal = null;
+}
+
+async function confirmAddToPlanner(recipeId) {
+  const dateISO = document.getElementById('atp-date').value;
+  const slot = document.getElementById('atp-slot').value;
+  const statusEl = document.getElementById('atp-status');
+  if (!dateISO) { if (statusEl) statusEl.textContent = 'Pick a date first.'; return; }
+  const { error } = await supabaseClient.from('meal_plan_entries')
+    .upsert(
+      { user_id: state.user.id, plan_date: dateISO, meal_slot: slot, recipe_id: recipeId },
+      { onConflict: 'user_id,plan_date,meal_slot' }
+    );
+  if (statusEl) {
+    if (error) {
+      statusEl.style.color = '';
+      statusEl.textContent = error.message;
+    } else {
+      statusEl.style.color = 'var(--success)';
+      statusEl.textContent = `Added to ${capitalizeFirst(slot)} on ${formatDateShort(dateISO)} — pick another date/meal for this recipe, or close when done.`;
+    }
+  }
 }
 
 // ---------------------------------------------------------------------------

@@ -253,10 +253,27 @@ label { font-size: 13px; color: var(--text-muted); display: block; margin-bottom
   color: var(--text-muted);
   font-weight: 600;
 }
-.planner-filled { background: var(--accent-soft); align-items: center; }
-.planner-filled a { color: var(--accent-hover); text-decoration: none; font-size: 13px; }
-.planner-filled a:hover { text-decoration: underline; }
-.planner-filled button { padding: 3px 6px; }
+/* A day/slot cell can now hold several dishes (main, sides, starter,
+   dessert) stacked vertically, plus an "+ Add" button underneath it — this
+   overrides the base .planner-cell's row layout with a column one. */
+.planner-day-cell {
+  flex-direction: column;
+  align-items: stretch;
+  justify-content: flex-start;
+  gap: 4px;
+}
+.planner-dish {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 6px;
+  background: var(--accent-soft);
+  border-radius: 6px;
+  padding: 3px 6px;
+}
+.planner-dish a { color: var(--accent-hover); text-decoration: none; font-size: 13px; }
+.planner-dish a:hover { text-decoration: underline; }
+.planner-dish button { padding: 2px 5px; }
 
 /* ---- phones / narrow screens ---- */
 @media (max-width: 640px) {

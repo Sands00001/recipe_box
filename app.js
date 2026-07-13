@@ -10,7 +10,7 @@ const MEAL_TYPES = ['breakfast', 'starter', 'main meal', 'side', 'dessert', 'sna
 const DIETS = ['none', 'vegetarian', 'vegan'];
 const SOURCES = ['gousto', 'handwritten', 'book', 'magazine', 'website', 'other'];
 const PHOTO_BUCKET = 'recipe-photos';
-const PLAN_SLOTS = ['breakfast', 'lunch', 'dinner', 'dessert']; // the weekly planner's meal slots
+const PLAN_SLOTS = ['breakfast', 'starter', 'lunch', 'dinner', 'dessert']; // the weekly planner's meal slots
 
 let state = {
   user: null,
@@ -470,11 +470,10 @@ async function confirmAddToPlanner(recipeId) {
   const slot = document.getElementById('atp-slot').value;
   const statusEl = document.getElementById('atp-status');
   if (!dateISO) { if (statusEl) statusEl.textContent = 'Pick a date first.'; return; }
+  // A plain insert, not an upsert — a slot can hold several dishes, so this
+  // adds alongside whatever else is already assigned to that date/slot.
   const { error } = await supabaseClient.from('meal_plan_entries')
-    .upsert(
-      { user_id: state.user.id, plan_date: dateISO, meal_slot: slot, recipe_id: recipeId },
-      { onConflict: 'user_id,plan_date,meal_slot' }
-    );
+    .insert({ user_id: state.user.id, plan_date: dateISO, meal_slot: slot, recipe_id: recipeId });
   if (statusEl) {
     if (error) {
       statusEl.style.color = '';
@@ -1314,9 +1313,14 @@ async function loadPlanner(weekStartISO) {
     .lte('plan_date', weekDates[6]);
   if (error) console.error(error);
 
+  // Each (date, slot) can now hold more than one dish (a main plus sides,
+  // a starter, dessert, etc. all under the same meal occasion), so entryMap
+  // holds an array of entries per key rather than a single one.
   const entryMap = {};
   (entries || []).forEach((e) => {
-    entryMap[`${e.plan_date}|${e.meal_slot}`] = { id: e.id, recipeId: e.recipe_id, title: e.recipes?.title || '(deleted recipe)' };
+    const key = `${e.plan_date}|${e.meal_slot}`;
+    if (!entryMap[key]) entryMap[key] = [];
+    entryMap[key].push({ id: e.id, recipeId: e.recipe_id, title: e.recipes?.title || '(deleted recipe)' });
   });
 
   state.viewParams = { weekStart: weekStartISO, weekDates, entryMap };
@@ -1325,7 +1329,7 @@ async function loadPlanner(weekStartISO) {
 function renderPlanner(root) {
   const { weekDates, entryMap } = state.viewParams;
   const dayNames = ['Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat', 'Sun'];
-  const distinctRecipeIds = new Set(Object.values(entryMap).map((e) => e.recipeId));
+  const distinctRecipeIds = new Set(Object.values(entryMap).flat().map((e) => e.recipeId));
 
   root.innerHTML = `
     <div class="field-row" style="align-items:center;justify-content:space-between">
@@ -1344,7 +1348,7 @@ function renderPlanner(root) {
         ${weekDates.map((d, i) => `<div class="planner-cell planner-header">${dayNames[i]}<br>${formatDateShort(d)}</div>`).join('')}
         ${PLAN_SLOTS.map((slot) => `
           <div class="planner-cell planner-slot-label">${capitalizeFirst(slot)}</div>
-          ${weekDates.map((d) => renderPlannerCell(d, slot, entryMap[`${d}|${slot}`])).join('')}
+          ${weekDates.map((d) => renderPlannerCell(d, slot, entryMap[`${d}|${slot}`] || [])).join('')}
         `).join('')}
       </div>
     </div>
@@ -1358,29 +1362,32 @@ function renderPlanner(root) {
   `;
 }
 
-function renderPlannerCell(dateISO, slot, entry) {
-  if (entry) {
-    return `
-      <div class="planner-cell planner-filled">
-        <a href="#" onclick="goTo('detail', {id:'${entry.recipeId}'}); return false;">${escapeHtml(entry.title)}</a>
-        <button class="btn-icon btn-danger" onclick="removePlanEntry('${entry.id}')" title="Remove"><i class="ti ti-x"></i></button>
-      </div>
-    `;
-  }
+// A slot can hold any number of dishes (main, sides, starter, dessert on a
+// bigger occasion) rather than just one, so this always lists every entry
+// for that date/slot and keeps an "+ Add" button available underneath to
+// add another, rather than replacing it with a picker only when empty.
+function renderPlannerCell(dateISO, slot, entries) {
+  const dishesHtml = entries.map((entry) => `
+    <div class="planner-dish">
+      <a href="#" onclick="goTo('detail', {id:'${entry.recipeId}'}); return false;">${escapeHtml(entry.title)}</a>
+      <button class="btn-icon btn-danger" onclick="removePlanEntry('${entry.id}')" title="Remove"><i class="ti ti-x"></i></button>
+    </div>
+  `).join('');
   return `
-    <div class="planner-cell">
-      <button style="width:100%;justify-content:center" onclick="openMealPicker('${dateISO}','${slot}')"><i class="ti ti-plus"></i> Add</button>
+    <div class="planner-cell planner-day-cell">
+      ${dishesHtml}
+      <button style="justify-content:center" onclick="openMealPicker('${dateISO}','${slot}')"><i class="ti ti-plus"></i> Add</button>
     </div>
   `;
 }
 
 async function assignPlanEntry(dateISO, slot, recipeId) {
   if (!recipeId) return;
+  // A plain insert, not an upsert — a slot can hold several dishes now, so
+  // adding a second (or third) recipe to the same date/slot should add
+  // alongside what's already there instead of replacing it.
   const { error } = await supabaseClient.from('meal_plan_entries')
-    .upsert(
-      { user_id: state.user.id, plan_date: dateISO, meal_slot: slot, recipe_id: recipeId },
-      { onConflict: 'user_id,plan_date,meal_slot' }
-    );
+    .insert({ user_id: state.user.id, plan_date: dateISO, meal_slot: slot, recipe_id: recipeId });
   if (error) { alert(error.message); return; }
   await loadPlanner(state.viewParams.weekStart);
   renderPlanner(document.getElementById('view-root'));
@@ -1402,7 +1409,7 @@ function goToWeek(delta) {
 // Browse) by populating the same selection Set from this week's distinct
 // planned recipes instead.
 function createShoppingListFromWeek() {
-  const ids = new Set(Object.values(state.viewParams.entryMap).map((e) => e.recipeId));
+  const ids = new Set(Object.values(state.viewParams.entryMap).flat().map((e) => e.recipeId));
   if (ids.size === 0) { alert('No meals planned for this week yet.'); return; }
   state.selectedRecipeIds = ids;
   goTo('shopping-list');

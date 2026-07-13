@@ -168,18 +168,23 @@ is editable before you save — it's a first draft, not the final word,
 especially on handwriting.
 
 **Meal planner.** The Planner view is a Monday–Sunday grid with a
-breakfast/lunch/dinner/dessert row per day. Clicking "+ Add" on any empty
-slot — or the general "Add a meal" button above the grid — opens a filterable
-picker instead of a long alphabetical list: narrow by meal type, main
-ingredient, or diet (using the same tags you already add to recipes), then
-click Add (or double-click) on the recipe you want. The picker stays open
-after each pick so you can plan several meals in one sitting, and its Day/
-Meal dropdowns let you redirect each pick to a different slot without
-reopening it. Remove an assigned meal with the × button. Use the arrows to
-flip to the previous/next week. A "Create shopping list from this week"
-button feeds every distinct recipe assigned that week straight into the same
-shopping-list feature described above. (Sending the plan to your phone's
-calendar isn't built yet — that's a separate piece for later if you want it.)
+breakfast/starter/lunch/dinner/dessert row per day. Each slot can hold more
+than one dish — handy for a bigger occasion with a starter, a main, one or
+two sides, and a dessert all under the same meal. Clicking "+ Add" on any
+slot — or the general "Add a meal" button above the grid — opens a
+filterable picker instead of a long alphabetical list: narrow by meal type,
+main ingredient, or diet (using the same tags you already add to recipes),
+then click Add (or double-click) on the recipe you want. The picker stays
+open after each pick so you can plan several meals in one sitting, and its
+Day/Meal dropdowns let you redirect each pick to a different slot without
+reopening it. Remove any one dish from a slot with its × button — the rest
+stay put. Use the arrows to flip to the previous/next week. A "Create
+shopping list from this week" button feeds every distinct recipe assigned
+that week straight into the same shopping-list feature described above. You
+can also add a recipe to the plan straight from its detail page — the "Add
+to Planner" button there prompts for any date and meal slot, no need to go
+find it in the grid first. (Sending the plan to your phone's calendar isn't
+built yet — that's a separate piece for later if you want it.)
 
 **Pantry search.** The "What can I make?" view lets you list what you've got
 on hand; `match_recipes_by_pantry` (a Postgres function using fuzzy text

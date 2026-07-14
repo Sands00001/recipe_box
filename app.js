@@ -679,8 +679,12 @@ function renderPhotoList(photos) {
                </label>`
           }
           <label>
-            <input type="checkbox" class="photo-scan-chk" data-idx="${idx}" ${p.id ? '' : 'checked'} /> Include in scan
+            <input type="checkbox" class="photo-scan-chk" data-idx="${idx}" ${(!p.id && p.includeInScanDefault !== false) ? 'checked' : ''} /> Include in scan
           </label>
+          ${p.isPdf
+            ? ''
+            : `<button class="btn-icon" onclick="reCropPhoto(${idx})" title="Crop a different part of this same photo — e.g. just the picture, for the thumbnail"><i class="ti ti-crop"></i> Crop again</button>`
+          }
           <button class="btn-icon btn-danger" onclick="removePhoto(${idx})"><i class="ti ti-x"></i> Remove</button>
         </div>
       `).join('')}
@@ -741,7 +745,10 @@ function stagePdfBlob(file) {
   document.getElementById('scan-btn').disabled = false;
 }
 
-function openCropModal(dataUrl, mimeType) {
+// extraOpts flows through to stagePhotoBlob once this crop is confirmed —
+// used by reCropPhoto() to mark a second crop of the same source photo as
+// the thumbnail and leave it out of the AI scan by default (see reCropPhoto).
+function openCropModal(dataUrl, mimeType, extraOpts = {}) {
   const remaining = state.photoQueue.length;
   const modal = document.createElement('div');
   modal.className = 'crop-modal';
@@ -763,6 +770,7 @@ function openCropModal(dataUrl, mimeType) {
   const img = document.getElementById('crop-target');
   state._cropModal = modal;
   state._originalDataUrl = dataUrl;
+  state._cropExtraOpts = extraOpts;
   state._fallbackRotationDeg = 0;
   try {
     state.cropper = new Cropper(img, { viewMode: 1, autoCropArea: 1 });
@@ -802,12 +810,22 @@ function loadImageElement(src) {
   });
 }
 
-function stagePhotoBlob(blob, mimeType) {
+// opts.originalDataUrl is kept on the photo so reCropPhoto() can later open
+// the crop tool again on the same source image (e.g. to grab just the photo
+// for the thumbnail, separate from the fuller crop used for the AI scan)
+// without having to re-select the file from disk. opts.isThumbnail and
+// opts.includeInScanDefault let a re-crop default sensibly (see reCropPhoto)
+// instead of always behaving like a brand-new upload.
+function stagePhotoBlob(blob, mimeType, opts = {}) {
   const previewUrl = URL.createObjectURL(blob);
   const photos = state.viewParams.photos;
+  const makeThumbnail = opts.isThumbnail || photos.length === 0;
+  if (makeThumbnail) photos.forEach((p) => { p.isThumbnail = false; });
   photos.push({
     id: null, url: null, blob, mimeType: mimeType || 'image/jpeg', previewUrl,
-    isThumbnail: photos.length === 0, isPdf: false
+    isThumbnail: makeThumbnail, isPdf: false,
+    originalDataUrl: opts.originalDataUrl || null,
+    includeInScanDefault: opts.includeInScanDefault !== false
   });
   cancelCrop();
   document.getElementById('photo-list').innerHTML = renderPhotoList(photos);
@@ -815,9 +833,10 @@ function stagePhotoBlob(blob, mimeType) {
 }
 
 async function confirmCrop(mimeType) {
+  const opts = { ...(state._cropExtraOpts || {}), originalDataUrl: state._originalDataUrl };
   if (state.cropper) {
     const canvas = state.cropper.getCroppedCanvas({ maxWidth: 1400, maxHeight: 1400 });
-    canvas.toBlob((blob) => stagePhotoBlob(blob, mimeType), mimeType || 'image/jpeg', 0.9);
+    canvas.toBlob((blob) => stagePhotoBlob(blob, mimeType, opts), mimeType || 'image/jpeg', 0.9);
     return;
   }
   // No cropper available — still apply any rotation the user picked, via canvas.
@@ -831,7 +850,43 @@ async function confirmCrop(mimeType) {
   ctx.translate(canvas.width / 2, canvas.height / 2);
   ctx.rotate((deg * Math.PI) / 180);
   ctx.drawImage(img, -img.width / 2, -img.height / 2);
-  canvas.toBlob((blob) => stagePhotoBlob(blob, mimeType), mimeType || 'image/jpeg', 0.9);
+  canvas.toBlob((blob) => stagePhotoBlob(blob, mimeType, opts), mimeType || 'image/jpeg', 0.9);
+}
+
+// Lets the same uploaded photo be cropped a second time for a different
+// purpose — e.g. a page that has both instructions and a picture on it: the
+// first crop (done on selection) keeps the whole useful area for the AI
+// scan, and "Crop again" reopens the tool on that same original image so
+// you can crop tight to just the picture for the thumbnail, without having
+// to pick the file from disk a second time. Falls back to re-fetching the
+// already-saved image when there's no in-memory original (a photo loaded
+// from a previously-saved recipe) — that still works, it just starts from
+// what's already stored rather than the very first upload.
+async function reCropPhoto(idx) {
+  const photo = state.viewParams.photos[idx];
+  if (!photo || photo.isPdf) return;
+  let dataUrl = photo.originalDataUrl;
+  if (!dataUrl && photo.url) {
+    try {
+      const resp = await fetch(photo.url);
+      const blob = await resp.blob();
+      dataUrl = await blobToDataUrl(blob);
+    } catch (err) {
+      alert(`Could not load this photo to crop again: ${err.message || err}`);
+      return;
+    }
+  }
+  if (!dataUrl) return;
+  openCropModal(dataUrl, photo.mimeType || 'image/jpeg', { isThumbnail: true, includeInScanDefault: false });
+}
+
+function blobToDataUrl(blob) {
+  return new Promise((resolve, reject) => {
+    const reader = new FileReader();
+    reader.onload = () => resolve(reader.result);
+    reader.onerror = reject;
+    reader.readAsDataURL(blob);
+  });
 }
 
 // Downscale a photo before sending it to the AI scan — the saved/thumbnail

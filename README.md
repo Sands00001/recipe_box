@@ -133,9 +133,13 @@ capture or an existing photo (or several at once — selecting multiple files
 from the same folder queues each photo for its own crop step, one after the
 other, and adds any PDFs straight away), then opens a crop tool (Cropper.js)
 with rotate left/right buttons before it's attached — handy for a photo taken
-sideways. A recipe can have any number of photos (e.g. front and back of a
-Gousto card, or two cookbook pages): each one shows in a small list on the
-edit form where
+sideways. If a page has both instructions and a picture on it and you want a
+tighter/different crop of just the picture for the thumbnail, use "Crop
+again" on that photo's card — it reopens the crop tool on the same original
+image (defaulting the new crop to become the thumbnail) instead of making
+you select the file from disk a second time. A recipe can have any number of
+photos (e.g. front and back of a Gousto card, or two cookbook pages): each
+one shows in a small list on the edit form where
 you pick which single photo is the **thumbnail** (shown on cards and the
 detail header) and tick which photo(s) to **include in the next AI scan** —
 the thumbnail and the scan photos don't have to be the same picture, and a

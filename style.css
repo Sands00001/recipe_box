@@ -202,7 +202,12 @@ label { font-size: 13px; color: var(--text-muted); display: block; margin-bottom
   width: min(600px, 92vw);
 }
 .crop-image-wrap { max-height: 60vh; overflow: hidden; margin-bottom: 14px; }
-.crop-image-wrap img { max-width: 100%; display: block; }
+/* max-height matches the wrapper above — without it, Cropper.js measures a
+   tall/portrait photo's own unconstrained rendered height and builds its
+   crop canvas to that full size, which can end up taller than the visible
+   60vh window, making the crop box impossible to move/resize vertically
+   within what you can actually see. */
+.crop-image-wrap img { max-width: 100%; max-height: 60vh; display: block; }
 
 .pantry-list { list-style: none; padding: 0; margin: 0 0 16px; }
 .pantry-list li { display: flex; gap: 8px; align-items: center; margin-bottom: 6px; }

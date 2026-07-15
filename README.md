@@ -172,23 +172,42 @@ is editable before you save — it's a first draft, not the final word,
 especially on handwriting.
 
 **Meal planner.** The Planner view is a Monday–Sunday grid with a
-breakfast/starter/lunch/dinner/dessert row per day. Each slot can hold more
-than one dish — handy for a bigger occasion with a starter, a main, one or
-two sides, and a dessert all under the same meal. Clicking "+ Add" on any
-slot — or the general "Add a meal" button above the grid — opens a
-filterable picker instead of a long alphabetical list: narrow by meal type,
-main ingredient, or diet (using the same tags you already add to recipes),
-then click Add (or double-click) on the recipe you want. The picker stays
-open after each pick so you can plan several meals in one sitting, and its
-Day/Meal dropdowns let you redirect each pick to a different slot without
-reopening it. Remove any one dish from a slot with its × button — the rest
-stay put. Use the arrows to flip to the previous/next week. A "Create
-shopping list from this week" button feeds every distinct recipe assigned
-that week straight into the same shopping-list feature described above. You
-can also add a recipe to the plan straight from its detail page — the "Add
-to Planner" button there prompts for any date and meal slot, no need to go
-find it in the grid first. (Sending the plan to your phone's calendar isn't
-built yet — that's a separate piece for later if you want it.)
+breakfast/lunch/dinner row per day. Each slot can hold more than one dish —
+a starter, main, sides, and dessert can all just be added under the same
+Lunch or Dinner slot, so there's no need for separate starter/dessert rows.
+Clicking "+ Add" on any slot — or the general "Add a meal" button above the
+grid — opens a filterable picker instead of a long alphabetical list: narrow
+by meal type, main ingredient, or diet (using the same tags you already add
+to recipes), then click Add (or double-click) on the recipe you want. The
+picker stays open after each pick so you can plan several meals in one
+sitting, and its Day/Meal dropdowns let you redirect each pick to a
+different slot without reopening it. Remove any one dish from a slot with
+its × button — the rest stay put. Use the arrows to flip to the previous/
+next week. A "Create shopping list from this week" button feeds every
+distinct recipe assigned that week straight into the same shopping-list
+feature described above, scaled by servings (see below) where set. You can
+also add a recipe to the plan straight from its detail page — the "Add to
+Planner" button there prompts for any date, meal slot, and servings, no
+need to go find it in the grid first. (Sending the plan to your phone's
+calendar isn't built yet — that's a separate piece for later if you want it.)
+
+**Servings scaling.** A recipe's detail page has an editable Servings number
+next to the ingredient list — change it and every ingredient quantity shown
+scales accordingly (e.g. 1.5× if you bump 4 servings up to 6), without
+touching what's actually saved. The "Create shopping list" button there
+picks up whatever's currently shown. On the Planner, each assigned dish
+normally assumes the recipe's own usual servings, but the small people-icon
+button next to a dish (or the ×N badge once set) lets you override the
+headcount for that one occasion — e.g. making a normally-4-serving recipe
+for 5 people on a particular day — and the weekly shopping list scales that
+dish's ingredients accordingly. If the same recipe is planned more than once
+in a week at different headcounts, each occurrence is scaled and added up
+separately rather than one overwriting the other.
+
+**Star ratings.** Separate from the favourite on/off toggle, each recipe can
+also get a 1-5 star rating — click a star on the Browse card or the detail
+page (clicking the currently-set star again clears it). Filter Browse down
+to a minimum rating with the "Any rating" dropdown next to the other filters.
 
 **Sharing a recipe.** The "Share" button on a recipe's detail page lets you
 send a copy to someone else — pick "Share as text" for a plain-text version
@@ -202,7 +221,8 @@ support it downloads instead, so you can attach or share it manually.
 **Pantry search.** The "What can I make?" view lets you list what you've got
 on hand; `match_recipes_by_pantry` (a Postgres function using fuzzy text
 matching via `pg_trgm`) ranks your recipes by what fraction of their
-ingredients you already have.
+ingredients you already have. Recipes with zero matching ingredients are
+left off the results entirely rather than cluttering the list.
 
 ## Known limitations / next steps
 

@@ -10,7 +10,7 @@ const MEAL_TYPES = ['breakfast', 'starter', 'main meal', 'side', 'dessert', 'sna
 const DIETS = ['none', 'vegetarian', 'vegan'];
 const SOURCES = ['gousto', 'handwritten', 'book', 'magazine', 'website', 'other'];
 const PHOTO_BUCKET = 'recipe-photos';
-const PLAN_SLOTS = ['breakfast', 'starter', 'lunch', 'dinner', 'dessert']; // the weekly planner's meal slots
+const PLAN_SLOTS = ['breakfast', 'lunch', 'dinner']; // the weekly planner's meal slots — starter/dessert are just extra dishes under lunch/dinner now that a slot can hold more than one
 
 let state = {
   user: null,
@@ -18,12 +18,13 @@ let state = {
   viewParams: {},
   recipes: [],
   densityMap: {},
-  filters: { search: '', mealType: '', mainIngredient: '', diet: '', source: '', favoritesOnly: false },
+  filters: { search: '', mealType: '', mainIngredient: '', diet: '', source: '', favoritesOnly: false, minRating: '' },
   pantryItems: [],
   pantryMatches: null,
   cropper: null, // active Cropper.js instance while the crop modal is open
   photoQueue: [], // images picked in a multi-select that still need cropping, one at a time
   selectedRecipeIds: new Set(), // recipes ticked in Browse, for the shopping list
+  shoppingListEntries: [], // [{ recipeId, scale }] actually fed into loadShoppingList — scale is usually 1
   shoppingList: null, // { recipeTitles, system, lines } once generated
   shoppingListSystem: 'metric',
   mealPicker: null // { dateISO, slot, recipes, filters, status } while the planner's meal picker modal is open
@@ -178,6 +179,7 @@ async function loadRecipes() {
   if (state.filters.source) query = query.eq('source', state.filters.source);
   if (state.filters.search) query = query.ilike('title', `%${state.filters.search}%`);
   if (state.filters.favoritesOnly) query = query.eq('is_favorite', true);
+  if (state.filters.minRating) query = query.gte('rating', state.filters.minRating);
   const { data, error } = await query;
   if (error) { console.error(error); state.recipes = []; return; }
 
@@ -212,6 +214,10 @@ function renderBrowse(root) {
         <option value="">Any source</option>
         ${SOURCES.map((s) => `<option value="${s}" ${f.source === s ? 'selected' : ''}>${s}</option>`).join('')}
       </select>
+      <select onchange="updateFilter('minRating', this.value)">
+        <option value="">Any rating</option>
+        ${[5, 4, 3, 2, 1].map((n) => `<option value="${n}" ${String(f.minRating) === String(n) ? 'selected' : ''}>${n}+ stars</option>`).join('')}
+      </select>
       <label style="display:flex;align-items:center;gap:5px;width:auto;margin:0;white-space:nowrap">
         <input type="checkbox" style="width:auto;min-width:0" ${f.favoritesOnly ? 'checked' : ''} onchange="updateFilter('favoritesOnly', this.checked)" />
         <i class="ti ti-star"></i> Favourites only
@@ -223,6 +229,22 @@ function renderBrowse(root) {
     </div>
     ${renderSelectionBar()}
   `;
+}
+
+// Shared 1-5 star rating widget, used on both the Browse card and the
+// recipe detail page — separate from the existing favourite on/off toggle.
+// Interactive stars call back with the star number and the rating as it was
+// before the click, so clicking the currently-set star clears the rating
+// rather than being stuck unable to go below 1.
+function renderStarRating(rating, { interactive = false, onClickFn = '', id = '', size = 15 } = {}) {
+  const stars = [1, 2, 3, 4, 5].map((n) => {
+    const icon = rating != null && n <= rating ? 'ti-star-filled' : 'ti-star';
+    const style = `font-size:${size}px;color:#d4a017`;
+    return interactive
+      ? `<button class="btn-icon" style="padding:1px" onclick="event.stopPropagation(); ${onClickFn}('${id}', ${n}, ${rating ?? 'null'})" title="${n} star${n === 1 ? '' : 's'}"><i class="ti ${icon}" style="${style}"></i></button>`
+      : `<i class="ti ${icon}" style="${style}"></i>`;
+  }).join('');
+  return `<span style="display:inline-flex;align-items:center">${stars}</span>`;
 }
 
 function renderRecipeCard(r) {
@@ -245,9 +267,23 @@ function renderRecipeCard(r) {
           ${ingTags.map((t) => `<span class="tag">${escapeHtml(t)}</span>`).join('')}
           ${r.diet !== 'none' ? `<span class="tag diet-${r.diet}">${r.diet}</span>` : ''}
         </div>
+        <div onclick="event.stopPropagation()" style="margin-top:4px">${renderStarRating(r.rating, { interactive: true, onClickFn: 'setRecipeRating', id: r.id })}</div>
       </div>
     </div>
   `;
+}
+
+async function setRecipeRating(id, n, currentRating) {
+  const nextRating = currentRating === n ? null : n;
+  const recipe = state.recipes.find((r) => r.id === id);
+  if (recipe) recipe.rating = nextRating;
+  renderBrowse(document.getElementById('view-root'));
+  const { error } = await supabaseClient.from('recipes').update({ rating: nextRating }).eq('id', id);
+  if (error) {
+    if (recipe) recipe.rating = currentRating;
+    renderBrowse(document.getElementById('view-root'));
+    alert(`Could not update rating: ${error.message}`);
+  }
 }
 
 function renderSelectionBar() {
@@ -258,7 +294,7 @@ function renderSelectionBar() {
       <span>${count} recipe${count === 1 ? '' : 's'} selected</span>
       <div class="field-row" style="margin:0">
         <button onclick="clearSelection()">Clear</button>
-        <button class="btn-primary" onclick="goTo('shopping-list')"><i class="ti ti-shopping-cart"></i> Create shopping list</button>
+        <button class="btn-primary" onclick="goToShoppingListFromSelection()"><i class="ti ti-shopping-cart"></i> Create shopping list</button>
       </div>
     </div>
   `;
@@ -324,12 +360,20 @@ async function loadRecipeDetail(id) {
   const { data: recipe } = await supabaseClient.from('recipes').select('*, recipe_tags(tag_type, tag_value)').eq('id', id).single();
   const { data: ingredients } = await supabaseClient.from('ingredients').select('*').eq('recipe_id', id).order('sort_order');
   const { data: photos } = await supabaseClient.from('recipe_photos').select('*').eq('recipe_id', id).order('sort_order');
-  state.viewParams = { id, recipe, ingredients: ingredients || [], photos: photos || [], displaySystem: recipe?.preferred_unit_system || 'metric' };
+  state.viewParams = {
+    id, recipe, ingredients: ingredients || [], photos: photos || [],
+    displaySystem: recipe?.preferred_unit_system || 'metric',
+    desiredServings: recipe?.servings || null // null when the recipe has no base servings count to scale from
+  };
 }
 
 function renderDetail(root) {
-  const { recipe, ingredients, photos, displaySystem } = state.viewParams;
+  const { recipe, ingredients, photos, displaySystem, desiredServings } = state.viewParams;
   if (!recipe) { root.innerHTML = '<p>Recipe not found.</p>'; return; }
+  // Scale ratio for displaying ingredient quantities for a different
+  // headcount than the recipe's own base servings — purely a display
+  // calculation, never written back to the saved recipe.
+  const servingsScale = recipe.servings && desiredServings ? desiredServings / recipe.servings : 1;
 
   const mealTags = recipe.recipe_tags.filter((t) => t.tag_type === 'meal_type').map((t) => t.tag_value);
   const ingTags = recipe.recipe_tags.filter((t) => t.tag_type === 'main_ingredient').map((t) => t.tag_value);
@@ -340,7 +384,8 @@ function renderDetail(root) {
     <div class="recipe-detail-header" style="margin-top:14px">
       ${recipe.image_url ? `<img src="${escapeHtml(recipe.image_url)}">` : ''}
       <div style="flex:1; min-width:220px">
-        <h2 style="margin:0 0 8px">${escapeHtml(recipe.title)}</h2>
+        <h2 style="margin:0 0 4px">${escapeHtml(recipe.title)}</h2>
+        <div style="margin-bottom:8px">${renderStarRating(recipe.rating, { interactive: true, onClickFn: 'setRecipeRatingDetail', id: recipe.id, size: 19 })}</div>
         <div class="tag-row">
           ${mealTags.map((t) => `<span class="tag">${escapeHtml(t)}</span>`).join('')}
           ${ingTags.map((t) => `<span class="tag">${escapeHtml(t)}</span>`).join('')}
@@ -348,7 +393,10 @@ function renderDetail(root) {
           <span class="tag">${escapeHtml(recipe.source)}</span>
         </div>
         <div class="meta-row">
-          ${recipe.servings ? `<span><i class="ti ti-users"></i> ${recipe.servings} servings</span>` : ''}
+          ${recipe.servings ? `<span><i class="ti ti-users"></i> Servings:
+              <input type="number" min="1" step="1" style="width:56px;padding:3px 6px" value="${desiredServings ?? recipe.servings}" onchange="setDesiredServings(this.value)" />
+              ${desiredServings && desiredServings !== recipe.servings ? `<span class="tag" title="Ingredient amounts below are scaled from the recipe's normal ${recipe.servings} servings">scaled from ${recipe.servings}</span>` : ''}
+            </span>` : ''}
           ${recipe.prep_time_minutes ? `<span><i class="ti ti-clock"></i> Prep ${recipe.prep_time_minutes} min</span>` : ''}
           ${recipe.cook_time_minutes ? `<span><i class="ti ti-flame"></i> Cook ${recipe.cook_time_minutes} min</span>` : ''}
           ${recipe.oven_temp_c ? `<span><i class="ti ti-temperature"></i> ${recipe.oven_temp_c}°C / ${recipe.oven_temp_f}°F / Gas ${recipe.oven_gas_mark}</span>` : ''}
@@ -364,7 +412,7 @@ function renderDetail(root) {
           <button onclick="goTo('edit', {id:'${recipe.id}'})"><i class="ti ti-edit"></i> Edit</button>
           <button onclick="toggleFavoriteDetail('${recipe.id}')"><i class="${recipe.is_favorite ? 'ti ti-star-filled' : 'ti ti-star'}"></i> ${recipe.is_favorite ? 'Favourited' : 'Add to favourites'}</button>
           <button onclick="openAddToPlannerModal('${recipe.id}')"><i class="ti ti-calendar-plus"></i> Add to Planner</button>
-          <button onclick="createShoppingListForRecipe('${recipe.id}')"><i class="ti ti-shopping-cart"></i> Create shopping list</button>
+          <button onclick="createShoppingListForRecipe('${recipe.id}', ${servingsScale})"><i class="ti ti-shopping-cart"></i> Create shopping list</button>
           <button onclick="openShareRecipeModal()"><i class="ti ti-share"></i> Share</button>
           <button class="btn-danger" onclick="deleteRecipe('${recipe.id}')"><i class="ti ti-trash"></i> Delete</button>
         </div>
@@ -378,7 +426,7 @@ function renderDetail(root) {
       ).join('')}
     </div>
     <ul class="ingredient-list">
-      ${ingredients.map((i) => renderIngredientLine(i, displaySystem)).join('')}
+      ${ingredients.map((i) => renderIngredientLine(i, displaySystem, servingsScale)).join('')}
     </ul>
 
     <h3 style="margin-top:24px">Method</h3>
@@ -387,10 +435,11 @@ function renderDetail(root) {
   `;
 }
 
-function renderIngredientLine(ing, system) {
-  const amt = ing[`${system}_quantity`];
+function renderIngredientLine(ing, system, scale = 1) {
+  const rawAmt = ing[`${system}_quantity`];
+  const amt = rawAmt != null && scale !== 1 ? round(rawAmt * scale, 2) : rawAmt;
   const unit = ing[`${system}_unit`];
-  const approx = system === 'us_cups' && amt != null && ing.original_system && ing.original_system !== 'us_cups' && !state.densityMap[ing.name.toLowerCase()];
+  const approx = system === 'us_cups' && rawAmt != null && ing.original_system && ing.original_system !== 'us_cups' && !state.densityMap[ing.name.toLowerCase()];
   const amountText = amt != null ? `${amt} ${unit === 'whole' ? '' : unit}` : '';
   return `<li><span>${escapeHtml(ing.name)}${ing.notes ? `, ${escapeHtml(ing.notes)}` : ''}</span>
     <span>${escapeHtml(amountText)}${approx ? ' <span class="approx-note">(approx.)</span>' : ''}</span></li>`;
@@ -401,10 +450,33 @@ function setDisplaySystem(sys) {
   renderDetail(document.getElementById('view-root'));
 }
 
+// Scaling ingredient amounts for a different headcount than the recipe's
+// own base servings — display-only, never written back to the saved
+// recipe. Resets to the base servings count if given something invalid.
+function setDesiredServings(val) {
+  const n = parseInt(val, 10);
+  const recipe = state.viewParams.recipe;
+  state.viewParams.desiredServings = (!isNaN(n) && n > 0) ? n : recipe.servings;
+  renderDetail(document.getElementById('view-root'));
+}
+
 async function deleteRecipe(id) {
   if (!confirm('Delete this recipe? This cannot be undone.')) return;
   await supabaseClient.from('recipes').delete().eq('id', id);
   goTo('browse');
+}
+
+async function setRecipeRatingDetail(id, n, currentRating) {
+  const nextRating = currentRating === n ? null : n;
+  const recipe = state.viewParams.recipe;
+  recipe.rating = nextRating;
+  renderDetail(document.getElementById('view-root'));
+  const { error } = await supabaseClient.from('recipes').update({ rating: nextRating }).eq('id', id);
+  if (error) {
+    recipe.rating = currentRating;
+    renderDetail(document.getElementById('view-root'));
+    alert(`Could not update rating: ${error.message}`);
+  }
 }
 
 async function toggleFavoriteDetail(id) {
@@ -422,8 +494,16 @@ async function toggleFavoriteDetail(id) {
 
 // Quick single-recipe shopping list, straight from the detail page — reuses
 // the same selection Set and shopping-list view as ticking cards in Browse.
-function createShoppingListForRecipe(id) {
+function createShoppingListForRecipe(id, scale = 1) {
   state.selectedRecipeIds = new Set([id]);
+  state.shoppingListEntries = [{ recipeId: id, scale }];
+  goTo('shopping-list');
+}
+
+// Browse's tick-to-select flow — always at each recipe's normal quantities
+// (scale 1), unlike the week/single-recipe flows which can carry a scale.
+function goToShoppingListFromSelection() {
+  state.shoppingListEntries = Array.from(state.selectedRecipeIds).map((recipeId) => ({ recipeId, scale: 1 }));
   goTo('shopping-list');
 }
 
@@ -660,7 +740,9 @@ async function shareRecipeAsPdf() {
 // function reloads/re-renders the planner view, which would clobber the
 // detail page we're actually standing on — this does its own upsert instead.
 function openAddToPlannerModal(recipeId) {
-  const title = state.viewParams.recipe?.title || 'this recipe';
+  const recipe = state.viewParams.recipe;
+  const title = recipe?.title || 'this recipe';
+  const baseServings = recipe?.servings || null;
   const modal = document.createElement('div');
   modal.className = 'crop-modal';
   modal.innerHTML = `
@@ -675,6 +757,7 @@ function openAddToPlannerModal(recipeId) {
         <div class="field"><label>Meal</label>
           <select id="atp-slot">${PLAN_SLOTS.map((s) => `<option value="${s}">${capitalizeFirst(s)}</option>`).join('')}</select>
         </div>
+        ${baseServings ? `<div class="field"><label>Servings</label><input type="number" min="1" step="1" id="atp-servings" value="${baseServings}" /></div>` : ''}
       </div>
       <div id="atp-status" class="error-text" style="min-height:16px"></div>
       <div class="field-row" style="margin-top:6px">
@@ -697,10 +780,17 @@ async function confirmAddToPlanner(recipeId) {
   const slot = document.getElementById('atp-slot').value;
   const statusEl = document.getElementById('atp-status');
   if (!dateISO) { if (statusEl) statusEl.textContent = 'Pick a date first.'; return; }
+  // Only stored as an explicit override if it actually differs from the
+  // recipe's own normal servings — otherwise leave it null (the default,
+  // meaning "assume the recipe's normal servings").
+  const servingsEl = document.getElementById('atp-servings');
+  const baseServings = state.viewParams.recipe?.servings || null;
+  const enteredServings = servingsEl ? numOrNull(servingsEl.value) : null;
+  const servings = enteredServings != null && enteredServings !== baseServings ? enteredServings : null;
   // A plain insert, not an upsert — a slot can hold several dishes, so this
   // adds alongside whatever else is already assigned to that date/slot.
   const { error } = await supabaseClient.from('meal_plan_entries')
-    .insert({ user_id: state.user.id, plan_date: dateISO, meal_slot: slot, recipe_id: recipeId });
+    .insert({ user_id: state.user.id, plan_date: dateISO, meal_slot: slot, recipe_id: recipeId, servings });
   if (statusEl) {
     if (error) {
       statusEl.style.color = '';
@@ -1450,8 +1540,11 @@ async function findRecipes() {
 }
 
 function renderPantryMatches() {
-  if (!state.pantryMatches || state.pantryMatches.length === 0) return '<p>No matches yet — add a few pantry items and try again.</p>';
-  return state.pantryMatches.map((m) => `
+  // A recipe with 0 matched ingredients isn't a match worth showing — it
+  // just clutters the list with "0 of X ingredients on hand" entries.
+  const matches = (state.pantryMatches || []).filter((m) => m.matched_ingredients > 0);
+  if (matches.length === 0) return '<p>No matches yet — add a few pantry items and try again.</p>';
+  return matches.map((m) => `
     <div class="match-result" onclick="goTo('detail', {id:'${m.recipe_id}'})" style="cursor:pointer">
       <div>
         <strong>${escapeHtml(m.title)}</strong>
@@ -1466,15 +1559,35 @@ function renderPantryMatches() {
 // Shopping list — combine ingredients from selected recipes
 // ---------------------------------------------------------------------------
 
+// state.shoppingListEntries is a list of { recipeId, scale } — usually
+// scale 1, but the planner's weekly shopping list and a single recipe's
+// "Create shopping list" button (respecting its on-screen servings control)
+// can carry a different scale per entry. If the same recipe shows up more
+// than once with different scales (e.g. planned twice in a week at
+// different headcounts), each occurrence contributes its own scaled amount
+// rather than one overwriting the other.
 async function loadShoppingList() {
-  const ids = Array.from(state.selectedRecipeIds);
-  if (ids.length === 0) { state.shoppingList = { recipeTitles: [], lines: [] }; return; }
+  const entries = state.shoppingListEntries || [];
+  if (entries.length === 0) { state.shoppingList = { recipeTitles: [], lines: [] }; return; }
 
-  const { data: recipes } = await supabaseClient.from('recipes').select('id, title').in('id', ids);
-  const { data: ingredients, error } = await supabaseClient.from('ingredients').select('*').in('recipe_id', ids);
+  const recipeIds = [...new Set(entries.map((e) => e.recipeId))];
+  const { data: recipes } = await supabaseClient.from('recipes').select('id, title').in('id', recipeIds);
+  const { data: allIngredients, error } = await supabaseClient.from('ingredients').select('*').in('recipe_id', recipeIds);
   if (error) { console.error(error); state.shoppingList = { recipeTitles: [], lines: [] }; render(); return; }
 
-  const lines = aggregateIngredientsForShoppingList(ingredients, state.shoppingListSystem, state.densityMap);
+  const scaledRows = [];
+  for (const entry of entries) {
+    const scale = entry.scale || 1;
+    for (const row of (allIngredients || []).filter((i) => i.recipe_id === entry.recipeId)) {
+      scaledRows.push(
+        scale === 1 || row.original_quantity == null
+          ? row
+          : { ...row, original_quantity: row.original_quantity * scale }
+      );
+    }
+  }
+
+  const lines = aggregateIngredientsForShoppingList(scaledRows, state.shoppingListSystem, state.densityMap);
   state.shoppingList = {
     recipeTitles: (recipes || []).map((r) => r.title),
     lines
@@ -1507,9 +1620,9 @@ function renderShoppingListBody(list) {
     </div>
 
     <ul class="ingredient-list">
-      ${list.lines.map((line) => `<li><label style="display:flex;gap:8px;align-items:center;cursor:pointer">
-          <input type="checkbox" onchange="this.parentElement.parentElement.classList.toggle('checked-off', this.checked)" />
-          <span>${escapeHtml(formatShoppingListLine(line))}</span>
+      ${list.lines.map((line) => `<li><label style="display:flex;gap:8px;align-items:center;cursor:pointer;width:100%">
+          <input type="checkbox" style="flex-shrink:0" onchange="this.parentElement.parentElement.classList.toggle('checked-off', this.checked)" />
+          <span style="flex:1;min-width:0;text-align:left">${escapeHtml(formatShoppingListLine(line))}</span>
         </label></li>`).join('')}
     </ul>
 
@@ -1590,19 +1703,25 @@ async function loadPlanner(weekStartISO) {
 
   const { data: entries, error } = await supabaseClient
     .from('meal_plan_entries')
-    .select('id, plan_date, meal_slot, recipe_id, recipes(title)')
+    .select('id, plan_date, meal_slot, recipe_id, servings, recipes(title, servings)')
     .gte('plan_date', weekDates[0])
     .lte('plan_date', weekDates[6]);
   if (error) console.error(error);
 
   // Each (date, slot) can now hold more than one dish (a main plus sides,
   // a starter, dessert, etc. all under the same meal occasion), so entryMap
-  // holds an array of entries per key rather than a single one.
+  // holds an array of entries per key rather than a single one. `servings`
+  // is an optional per-entry override (null = assume the recipe's own
+  // normal servings, kept alongside as `recipeServings` for comparison and
+  // for scaling the weekly shopping list).
   const entryMap = {};
   (entries || []).forEach((e) => {
     const key = `${e.plan_date}|${e.meal_slot}`;
     if (!entryMap[key]) entryMap[key] = [];
-    entryMap[key].push({ id: e.id, recipeId: e.recipe_id, title: e.recipes?.title || '(deleted recipe)' });
+    entryMap[key].push({
+      id: e.id, recipeId: e.recipe_id, title: e.recipes?.title || '(deleted recipe)',
+      servings: e.servings, recipeServings: e.recipes?.servings ?? null
+    });
   });
 
   state.viewParams = { weekStart: weekStartISO, weekDates, entryMap };
@@ -1649,12 +1768,18 @@ function renderPlanner(root) {
 // for that date/slot and keeps an "+ Add" button available underneath to
 // add another, rather than replacing it with a picker only when empty.
 function renderPlannerCell(dateISO, slot, entries) {
-  const dishesHtml = entries.map((entry) => `
+  const dishesHtml = entries.map((entry) => {
+    // An override only counts as one if it actually differs from the
+    // recipe's own normal servings — otherwise there's nothing to flag.
+    const overridden = entry.servings != null && entry.servings !== entry.recipeServings;
+    return `
     <div class="planner-dish">
       <a href="#" onclick="goTo('detail', {id:'${entry.recipeId}'}); return false;">${escapeHtml(entry.title)}</a>
+      <button class="btn-icon" onclick="openEditPlanEntryServingsModal('${entry.id}')" title="${overridden ? `Serving ${entry.servings} (normally ${entry.recipeServings})` : 'Set servings for this meal'}">${overridden ? `×${entry.servings}` : '<i class="ti ti-users" style="font-size:12px"></i>'}</button>
       <button class="btn-icon btn-danger" onclick="removePlanEntry('${entry.id}')" title="Remove"><i class="ti ti-x"></i></button>
     </div>
-  `).join('');
+  `;
+  }).join('');
   return `
     <div class="planner-cell planner-day-cell">
       ${dishesHtml}
@@ -1681,6 +1806,51 @@ async function removePlanEntry(entryId) {
   renderPlanner(document.getElementById('view-root'));
 }
 
+// Per-dish servings override — lets a specific planned meal (e.g. Saturday's
+// dinner) be made for a different headcount than the recipe's own normal
+// servings, without changing the recipe itself. Feeds into the weekly
+// shopping list via createShoppingListFromWeek's scaling.
+function openEditPlanEntryServingsModal(entryId) {
+  const entry = Object.values(state.viewParams.entryMap).flat().find((e) => e.id === entryId);
+  if (!entry) return;
+  const current = entry.servings ?? entry.recipeServings ?? '';
+  const modal = document.createElement('div');
+  modal.className = 'crop-modal';
+  modal.innerHTML = `
+    <div class="crop-modal-inner" style="width:min(320px, 90vw)">
+      <div class="field-row" style="justify-content:space-between;align-items:center;margin-bottom:2px">
+        <h3 style="margin:0"><i class="ti ti-users"></i> Servings</h3>
+        <button class="btn-icon" onclick="closeEditPlanEntryServingsModal()"><i class="ti ti-x"></i></button>
+      </div>
+      <p style="font-size:13px;color:var(--text-muted);margin:0 0 10px">${escapeHtml(entry.title)}${entry.recipeServings ? ` — normally serves ${entry.recipeServings}` : ''}</p>
+      <div class="field"><label>Servings for this meal</label><input type="number" min="1" step="1" id="eps-servings" value="${current}" /></div>
+      <div class="field-row" style="margin-top:6px">
+        <button class="btn-primary" onclick="saveEditPlanEntryServings('${entryId}')"><i class="ti ti-check"></i> Save</button>
+        ${entry.servings != null ? `<button onclick="saveEditPlanEntryServings('${entryId}', true)">Reset to normal</button>` : ''}
+        <button onclick="closeEditPlanEntryServingsModal()">Cancel</button>
+      </div>
+      <div id="eps-status" class="error-text" style="min-height:16px"></div>
+    </div>
+  `;
+  document.body.appendChild(modal);
+  state._editPlanEntryServingsModal = modal;
+}
+
+function closeEditPlanEntryServingsModal() {
+  if (state._editPlanEntryServingsModal) state._editPlanEntryServingsModal.remove();
+  state._editPlanEntryServingsModal = null;
+}
+
+async function saveEditPlanEntryServings(entryId, reset = false) {
+  const statusEl = document.getElementById('eps-status');
+  const servings = reset ? null : numOrNull(document.getElementById('eps-servings').value);
+  const { error } = await supabaseClient.from('meal_plan_entries').update({ servings }).eq('id', entryId);
+  if (error) { if (statusEl) statusEl.textContent = error.message; return; }
+  closeEditPlanEntryServingsModal();
+  await loadPlanner(state.viewParams.weekStart);
+  renderPlanner(document.getElementById('view-root'));
+}
+
 function goToWeek(delta) {
   if (delta === 0) { goTo('planner', {}); return; }
   const newStart = formatDateISO(addDays(parseISODate(state.viewParams.weekStart), delta * 7));
@@ -1691,9 +1861,17 @@ function goToWeek(delta) {
 // Browse) by populating the same selection Set from this week's distinct
 // planned recipes instead.
 function createShoppingListFromWeek() {
-  const ids = new Set(Object.values(state.viewParams.entryMap).flat().map((e) => e.recipeId));
-  if (ids.size === 0) { alert('No meals planned for this week yet.'); return; }
-  state.selectedRecipeIds = ids;
+  const allEntries = Object.values(state.viewParams.entryMap).flat();
+  if (allEntries.length === 0) { alert('No meals planned for this week yet.'); return; }
+  state.selectedRecipeIds = new Set(allEntries.map((e) => e.recipeId));
+  // Each planned dish contributes its own scale — if a recipe is servings-
+  // overridden for one occasion but not another (or planned twice with
+  // different headcounts), each occurrence is scaled and summed separately
+  // rather than one scale overwriting the other.
+  state.shoppingListEntries = allEntries.map((e) => ({
+    recipeId: e.recipeId,
+    scale: (e.servings && e.recipeServings) ? e.servings / e.recipeServings : 1
+  }));
   goTo('shopping-list');
 }
 

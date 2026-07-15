@@ -190,6 +190,15 @@ to Planner" button there prompts for any date and meal slot, no need to go
 find it in the grid first. (Sending the plan to your phone's calendar isn't
 built yet — that's a separate piece for later if you want it.)
 
+**Sharing a recipe.** The "Share" button on a recipe's detail page lets you
+send a copy to someone else — pick "Share as text" for a plain-text version
+(title, meta info, ingredients in whichever unit system is currently shown,
+method, and notes) via your device's share sheet, or clipboard copy as a
+fallback where the share sheet isn't available. "Share as PDF" builds an
+actual PDF client-side (via jsPDF), including the recipe's thumbnail photo,
+and shares it as a file the same way — on browsers without file-sharing
+support it downloads instead, so you can attach or share it manually.
+
 **Pantry search.** The "What can I make?" view lets you list what you've got
 on hand; `match_recipes_by_pantry` (a Postgres function using fuzzy text
 matching via `pg_trgm`) ranks your recipes by what fraction of their

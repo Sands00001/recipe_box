@@ -365,6 +365,7 @@ function renderDetail(root) {
           <button onclick="toggleFavoriteDetail('${recipe.id}')"><i class="${recipe.is_favorite ? 'ti ti-star-filled' : 'ti ti-star'}"></i> ${recipe.is_favorite ? 'Favourited' : 'Add to favourites'}</button>
           <button onclick="openAddToPlannerModal('${recipe.id}')"><i class="ti ti-calendar-plus"></i> Add to Planner</button>
           <button onclick="createShoppingListForRecipe('${recipe.id}')"><i class="ti ti-shopping-cart"></i> Create shopping list</button>
+          <button onclick="openShareRecipeModal()"><i class="ti ti-share"></i> Share</button>
           <button class="btn-danger" onclick="deleteRecipe('${recipe.id}')"><i class="ti ti-trash"></i> Delete</button>
         </div>
       </div>
@@ -424,6 +425,232 @@ async function toggleFavoriteDetail(id) {
 function createShoppingListForRecipe(id) {
   state.selectedRecipeIds = new Set([id]);
   goTo('shopping-list');
+}
+
+// ---------------------------------------------------------------------------
+// Share a recipe — as plain text (native share sheet, falling back to
+// clipboard copy) or as a generated PDF (native share sheet with a file
+// attached where supported, falling back to a direct download otherwise).
+// ---------------------------------------------------------------------------
+
+function openShareRecipeModal() {
+  const modal = document.createElement('div');
+  modal.className = 'crop-modal';
+  modal.innerHTML = `
+    <div class="crop-modal-inner" style="width:min(360px, 90vw)">
+      <div class="field-row" style="justify-content:space-between;align-items:center;margin-bottom:2px">
+        <h3 style="margin:0"><i class="ti ti-share"></i> Share recipe</h3>
+        <button class="btn-icon" onclick="closeShareRecipeModal()"><i class="ti ti-x"></i></button>
+      </div>
+      <p style="font-size:13px;color:var(--text-muted);margin:0 0 10px">Choose a format to share.</p>
+      <div class="field-row">
+        <button class="btn-primary" style="flex:1;justify-content:center" onclick="shareRecipeAsText()"><i class="ti ti-file-text"></i> Share as text</button>
+        <button style="flex:1;justify-content:center" onclick="shareRecipeAsPdf()"><i class="ti ti-file-type-pdf"></i> Share as PDF</button>
+      </div>
+      <div id="share-recipe-status" class="error-text" style="min-height:16px;margin-top:8px"></div>
+    </div>
+  `;
+  document.body.appendChild(modal);
+  state._shareRecipeModal = modal;
+}
+
+function closeShareRecipeModal() {
+  if (state._shareRecipeModal) state._shareRecipeModal.remove();
+  state._shareRecipeModal = null;
+}
+
+// Builds a plain-text version of the recipe using whichever unit system is
+// currently selected on the detail page, matching what's on screen.
+function buildRecipeShareText() {
+  const { recipe, ingredients, displaySystem } = state.viewParams;
+  const lines = [recipe.title, ''];
+
+  const meta = [];
+  if (recipe.servings) meta.push(`Servings: ${recipe.servings}`);
+  if (recipe.prep_time_minutes) meta.push(`Prep: ${recipe.prep_time_minutes} min`);
+  if (recipe.cook_time_minutes) meta.push(`Cook: ${recipe.cook_time_minutes} min`);
+  if (recipe.oven_temp_c) meta.push(`Oven: ${recipe.oven_temp_c}°C / ${recipe.oven_temp_f}°F / Gas ${recipe.oven_gas_mark}`);
+  if (meta.length) { lines.push(meta.join('  |  ')); lines.push(''); }
+
+  lines.push('Ingredients:');
+  ingredients.forEach((ing) => lines.push(`- ${formatShareIngredientLine(ing, displaySystem)}`));
+  lines.push('');
+  lines.push('Method:');
+  lines.push(recipe.instructions || '');
+
+  if (recipe.notes) { lines.push(''); lines.push('Notes:'); lines.push(recipe.notes); }
+  return lines.join('\n');
+}
+
+function formatShareIngredientLine(ing, system) {
+  const amt = ing[`${system}_quantity`];
+  const unit = ing[`${system}_unit`];
+  const amountText = amt != null ? `${amt} ${unit === 'whole' ? '' : unit}`.trim() : '';
+  return `${amountText ? amountText + ' ' : ''}${ing.name}${ing.notes ? `, ${ing.notes}` : ''}`;
+}
+
+async function shareRecipeAsText() {
+  const { recipe } = state.viewParams;
+  const text = buildRecipeShareText();
+  const statusEl = document.getElementById('share-recipe-status');
+  if (navigator.share) {
+    try {
+      await navigator.share({ title: recipe.title, text });
+      closeShareRecipeModal();
+      return;
+    } catch (err) {
+      if (err.name === 'AbortError') return; // user backed out of the share sheet
+      // otherwise fall through to the clipboard fallback below
+    }
+  }
+  try {
+    await navigator.clipboard.writeText(text);
+    if (statusEl) { statusEl.style.color = 'var(--success)'; statusEl.textContent = 'Copied to clipboard.'; }
+  } catch (err) {
+    if (statusEl) statusEl.textContent = `Could not share or copy: ${err.message || err}`;
+  }
+}
+
+// Builds a simple, clean PDF client-side with jsPDF (loaded via CDN in
+// index.html) — title, thumbnail photo (if any), meta info, ingredients in
+// the currently-displayed unit system, method, and notes. Paginates plain
+// text with jsPDF's splitTextToSize so longer methods/ingredient lists flow
+// onto extra pages rather than running off the bottom.
+async function buildRecipePdfBlob() {
+  const { recipe, ingredients, displaySystem } = state.viewParams;
+  const { jsPDF } = window.jspdf;
+  const doc = new jsPDF({ unit: 'pt', format: 'a4' });
+  const pageWidth = doc.internal.pageSize.getWidth();
+  const pageHeight = doc.internal.pageSize.getHeight();
+  const margin = 40;
+  const maxWidth = pageWidth - margin * 2;
+  let y = margin;
+
+  if (recipe.image_url) {
+    try {
+      const resp = await fetch(recipe.image_url);
+      const blob = await resp.blob();
+      const dataUrl = await blobToDataUrl(blob);
+      const imgEl = await loadImageElement(dataUrl);
+      const maxImgW = 160, maxImgH = 140;
+      const scale = Math.min(maxImgW / imgEl.naturalWidth, maxImgH / imgEl.naturalHeight, 1);
+      const imgWidth = imgEl.naturalWidth * scale;
+      const imgHeight = imgEl.naturalHeight * scale;
+      const imgFormat = /png/i.test(blob.type) ? 'PNG' : 'JPEG';
+      doc.addImage(dataUrl, imgFormat, margin, y, imgWidth, imgHeight);
+      y += imgHeight + 16;
+    } catch (err) {
+      console.error('Could not embed thumbnail in PDF, continuing without it:', err);
+    }
+  }
+
+  const ensureRoom = (needed) => { if (y + needed > pageHeight - margin) { doc.addPage(); y = margin; } };
+
+  doc.setFont('helvetica', 'bold');
+  doc.setFontSize(18);
+  const titleLines = doc.splitTextToSize(recipe.title, maxWidth);
+  ensureRoom(titleLines.length * 22);
+  doc.text(titleLines, margin, y);
+  y += titleLines.length * 22 + 8;
+
+  const meta = [];
+  if (recipe.servings) meta.push(`Servings: ${recipe.servings}`);
+  if (recipe.prep_time_minutes) meta.push(`Prep: ${recipe.prep_time_minutes} min`);
+  if (recipe.cook_time_minutes) meta.push(`Cook: ${recipe.cook_time_minutes} min`);
+  if (recipe.oven_temp_c) meta.push(`Oven: ${recipe.oven_temp_c}°C / ${recipe.oven_temp_f}°F / Gas ${recipe.oven_gas_mark}`);
+  if (meta.length) {
+    doc.setFont('helvetica', 'normal');
+    doc.setFontSize(11);
+    ensureRoom(16);
+    doc.text(meta.join('   |   '), margin, y);
+    y += 22;
+  }
+
+  doc.setFont('helvetica', 'bold');
+  doc.setFontSize(13);
+  ensureRoom(18);
+  doc.text('Ingredients', margin, y);
+  y += 18;
+  doc.setFont('helvetica', 'normal');
+  doc.setFontSize(11);
+  ingredients.forEach((ing) => {
+    const wrapped = doc.splitTextToSize(`• ${formatShareIngredientLine(ing, displaySystem)}`, maxWidth);
+    ensureRoom(wrapped.length * 14);
+    doc.text(wrapped, margin, y);
+    y += wrapped.length * 14 + 2;
+  });
+
+  y += 10;
+  doc.setFont('helvetica', 'bold');
+  doc.setFontSize(13);
+  ensureRoom(18);
+  doc.text('Method', margin, y);
+  y += 18;
+  doc.setFont('helvetica', 'normal');
+  doc.setFontSize(11);
+  doc.splitTextToSize(recipe.instructions || '', maxWidth).forEach((lineText) => {
+    ensureRoom(14);
+    doc.text(lineText, margin, y);
+    y += 14;
+  });
+
+  if (recipe.notes) {
+    y += 10;
+    doc.setFont('helvetica', 'bold');
+    doc.setFontSize(13);
+    ensureRoom(18);
+    doc.text('Notes', margin, y);
+    y += 18;
+    doc.setFont('helvetica', 'normal');
+    doc.setFontSize(11);
+    doc.splitTextToSize(recipe.notes, maxWidth).forEach((lineText) => {
+      ensureRoom(14);
+      doc.text(lineText, margin, y);
+      y += 14;
+    });
+  }
+
+  return doc.output('blob');
+}
+
+async function shareRecipeAsPdf() {
+  const { recipe } = state.viewParams;
+  const statusEl = document.getElementById('share-recipe-status');
+  if (statusEl) { statusEl.style.color = ''; statusEl.textContent = 'Building PDF…'; }
+
+  let blob;
+  try {
+    blob = await buildRecipePdfBlob();
+  } catch (err) {
+    if (statusEl) statusEl.textContent = `Could not build PDF: ${err.message || err}`;
+    return;
+  }
+
+  const fileName = `${(recipe.title || 'recipe').toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-+|-+$/g, '') || 'recipe'}.pdf`;
+  const file = new File([blob], fileName, { type: 'application/pdf' });
+
+  if (navigator.canShare && navigator.canShare({ files: [file] })) {
+    try {
+      await navigator.share({ files: [file], title: recipe.title });
+      closeShareRecipeModal();
+      return;
+    } catch (err) {
+      if (err.name === 'AbortError') return;
+      // otherwise fall through to the download fallback below
+    }
+  }
+
+  // Fallback for browsers without Web Share API file support (most desktop
+  // browsers) — download it directly so it can be shared manually.
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement('a');
+  a.href = url;
+  a.download = fileName;
+  document.body.appendChild(a);
+  a.click();
+  a.remove();
+  URL.revokeObjectURL(url);
+  if (statusEl) { statusEl.style.color = 'var(--success)'; statusEl.textContent = 'PDF downloaded — share it from your downloads/files.'; }
 }
 
 // "Add to Planner" from a recipe's detail page — a lighter-weight version of

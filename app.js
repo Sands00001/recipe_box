@@ -237,18 +237,18 @@ function renderBrowse(root) {
 // before the click, so clicking the currently-set star clears the rating
 // rather than being stuck unable to go below 1.
 function renderStarRating(rating, { interactive = false, onClickFn = '', id = '', size = 15 } = {}) {
-  // The filled and outline star glyphs in the icon font aren't drawn at
-  // exactly the same visual size for the same font-size, so switching a
-  // star between the two on click made it look like it shrank. Forcing both
-  // into an identical fixed-size, centered box (rather than trusting the
-  // glyph's own metrics) keeps every star the same size regardless of
-  // whether it's filled or not.
-  const iconStyle = `font-size:${size}px;line-height:1;width:${size}px;height:${size}px;display:inline-flex;align-items:center;justify-content:center;color:#d4a017`;
+  // Always the same solid star glyph for every star, filled or not — only
+  // the colour changes. Swapping between the outline and filled glyphs
+  // (ti-star vs ti-star-filled) turned out not to render reliably at a
+  // consistent size (and in some cases not to render at all), since the
+  // two aren't guaranteed to be drawn identically in the icon font. Using
+  // one glyph throughout and just changing colour sidesteps that entirely.
   const stars = [1, 2, 3, 4, 5].map((n) => {
-    const icon = rating != null && n <= rating ? 'ti-star-filled' : 'ti-star';
+    const filled = rating != null && n <= rating;
+    const style = `font-size:${size}px;color:${filled ? '#d4a017' : '#d8d2c5'}`;
     return interactive
-      ? `<button class="btn-icon" style="padding:1px;width:${size + 8}px;height:${size + 8}px;display:inline-flex;align-items:center;justify-content:center" onclick="event.stopPropagation(); ${onClickFn}('${id}', ${n}, ${rating ?? 'null'})" title="${n} star${n === 1 ? '' : 's'}"><i class="ti ${icon}" style="${iconStyle}"></i></button>`
-      : `<i class="ti ${icon}" style="${iconStyle}"></i>`;
+      ? `<button class="btn-icon" style="padding:1px" onclick="event.stopPropagation(); ${onClickFn}('${id}', ${n}, ${rating ?? 'null'})" title="${n} star${n === 1 ? '' : 's'}"><i class="ti ti-star-filled" style="${style}"></i></button>`
+      : `<i class="ti ti-star-filled" style="${style}"></i>`;
   }).join('');
   return `<span style="display:inline-flex;align-items:center">${stars}</span>`;
 }

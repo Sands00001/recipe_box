@@ -220,7 +220,7 @@ function renderBrowse(root) {
       </select>
       <label style="display:flex;align-items:center;gap:5px;width:auto;margin:0;white-space:nowrap">
         <input type="checkbox" style="width:auto;min-width:0" ${f.favoritesOnly ? 'checked' : ''} onchange="updateFilter('favoritesOnly', this.checked)" />
-        <i class="ti ti-star"></i> Favourites only
+        ${starSvg(true, 16)} Favourites only
       </label>
     </div>
     ${state.recipes.length === 0 ? '<div class="empty-state"><i class="ti ti-tools-kitchen-2" style="font-size:40px"></i><p>No recipes yet — add your first one.</p></div>' : ''}
@@ -231,29 +231,35 @@ function renderBrowse(root) {
   `;
 }
 
+// Inline SVG star (not an icon-font glyph). The loaded Tabler icons webfont
+// build turns out not to actually include any star icon at all — confirmed
+// by fetching its CSS directly and finding zero ti-star* class definitions
+// — which is why every ti-star / ti-star-filled usage, including the
+// long-standing favourite toggle, was rendering as a blank box/dot instead
+// of a star. Drawing the star as SVG sidesteps the icon font entirely, so
+// it's guaranteed to render, and colouring it via the fill attribute keeps
+// it the exact same shape and size whether it's "on" or "off" — only the
+// colour ever changes, never the glyph.
+function starSvg(filled, size = 20) {
+  const color = filled ? '#d4a017' : '#d8d2c5';
+  return `<svg width="${size}" height="${size}" viewBox="0 0 24 24" fill="${color}" style="display:block;flex-shrink:0"><path d="M12 17.27L18.18 21l-1.64-7.03L22 9.24l-7.19-.61L12 2 9.19 8.63 2 9.24l5.46 4.73L5.82 21z"/></svg>`;
+}
+
 // Shared 1-5 star rating widget, used on both the Browse card and the
 // recipe detail page — separate from the existing favourite on/off toggle.
 // Interactive stars call back with the star number and the rating as it was
 // before the click, so clicking the currently-set star clears the rating
 // rather than being stuck unable to go below 1.
 function renderStarRating(rating, { interactive = false, onClickFn = '', id = '', size = 20 } = {}) {
-  // Always the same solid star glyph for every star, filled or not — only
-  // the colour changes. Swapping between the outline and filled glyphs
-  // (ti-star vs ti-star-filled) turned out not to render reliably at a
-  // consistent size (and in some cases not to render at all), since the
-  // two aren't guaranteed to be drawn identically in the icon font. Using
-  // one glyph throughout and just changing colour sidesteps that entirely.
-  //
   // Each star button explicitly clears the base button's border/background
   // (it would otherwise look like 5 separate tiny boxed buttons) and uses
   // real padding for a properly tappable target — 1px padding around a
   // 15px icon was too small to reliably hit, especially on a phone.
   const stars = [1, 2, 3, 4, 5].map((n) => {
     const filled = rating != null && n <= rating;
-    const style = `font-size:${size}px;color:${filled ? '#d4a017' : '#d8d2c5'}`;
     return interactive
-      ? `<button style="padding:6px;border:none;background:none" onclick="event.stopPropagation(); ${onClickFn}('${id}', ${n}, ${rating ?? 'null'})" title="${n} star${n === 1 ? '' : 's'}"><i class="ti ti-star-filled" style="${style}"></i></button>`
-      : `<i class="ti ti-star-filled" style="${style}"></i>`;
+      ? `<button style="padding:6px;border:none;background:none;line-height:0" onclick="event.stopPropagation(); ${onClickFn}('${id}', ${n}, ${rating ?? 'null'})" title="${n} star${n === 1 ? '' : 's'}">${starSvg(filled, size)}</button>`
+      : starSvg(filled, size);
   }).join('');
   return `<span style="display:inline-flex;flex-wrap:wrap;align-items:center">${stars}</span>`;
 }
@@ -268,7 +274,7 @@ function renderRecipeCard(r) {
         <input type="checkbox" ${checked ? 'checked' : ''} onchange="toggleRecipeSelection('${r.id}')" />
       </label>
       <button class="recipe-favorite-btn ${r.is_favorite ? 'is-favorite' : ''}" onclick="event.stopPropagation(); toggleFavorite('${r.id}')" title="${r.is_favorite ? 'Remove from favourites' : 'Add to favourites'}">
-        <i class="${r.is_favorite ? 'ti ti-star-filled' : 'ti ti-star'}"></i>
+        ${starSvg(r.is_favorite, 18)}
       </button>
       ${r.image_url ? `<img src="${escapeHtml(r.image_url)}" alt="">` : `<div class="no-image"><i class="ti ti-tools-kitchen-2"></i></div>`}
       <div class="recipe-card-body">
@@ -421,7 +427,7 @@ function renderDetail(root) {
           </div>` : ''}
         <div class="field-row" style="margin-top:10px">
           <button onclick="goTo('edit', {id:'${recipe.id}'})"><i class="ti ti-edit"></i> Edit</button>
-          <button onclick="toggleFavoriteDetail('${recipe.id}')"><i class="${recipe.is_favorite ? 'ti ti-star-filled' : 'ti ti-star'}"></i> ${recipe.is_favorite ? 'Favourited' : 'Add to favourites'}</button>
+          <button onclick="toggleFavoriteDetail('${recipe.id}')" style="display:inline-flex;align-items:center;gap:6px">${starSvg(recipe.is_favorite, 17)} ${recipe.is_favorite ? 'Favourited' : 'Add to favourites'}</button>
           <button onclick="openAddToPlannerModal('${recipe.id}')"><i class="ti ti-calendar-plus"></i> Add to Planner</button>
           <button onclick="createShoppingListForRecipe('${recipe.id}', ${servingsScale})"><i class="ti ti-shopping-cart"></i> Create shopping list</button>
           <button onclick="openShareRecipeModal()"><i class="ti ti-share"></i> Share</button>

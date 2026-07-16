@@ -1445,6 +1445,20 @@ async function saveRecipe() {
 
   if (!payload.title) { alert('Please give the recipe a title.'); return; }
 
+  if (id === 'new') {
+    // Catch accidental double-imports (e.g. scanning the same Gousto card
+    // twice) — a name match doesn't block saving, just asks to confirm.
+    const { data: existing } = await supabaseClient
+      .from('recipes')
+      .select('id')
+      .eq('user_id', state.user.id)
+      .ilike('title', payload.title)
+      .limit(1);
+    if (existing && existing.length) {
+      if (!confirm(`You already have a recipe called "${payload.title}". Save this as a new recipe anyway?`)) return;
+    }
+  }
+
   let recipeId = id;
   if (id === 'new') {
     const { data, error } = await supabaseClient.from('recipes').insert(payload).select().single();

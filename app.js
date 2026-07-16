@@ -236,21 +236,26 @@ function renderBrowse(root) {
 // Interactive stars call back with the star number and the rating as it was
 // before the click, so clicking the currently-set star clears the rating
 // rather than being stuck unable to go below 1.
-function renderStarRating(rating, { interactive = false, onClickFn = '', id = '', size = 15 } = {}) {
+function renderStarRating(rating, { interactive = false, onClickFn = '', id = '', size = 20 } = {}) {
   // Always the same solid star glyph for every star, filled or not — only
   // the colour changes. Swapping between the outline and filled glyphs
   // (ti-star vs ti-star-filled) turned out not to render reliably at a
   // consistent size (and in some cases not to render at all), since the
   // two aren't guaranteed to be drawn identically in the icon font. Using
   // one glyph throughout and just changing colour sidesteps that entirely.
+  //
+  // Each star button explicitly clears the base button's border/background
+  // (it would otherwise look like 5 separate tiny boxed buttons) and uses
+  // real padding for a properly tappable target — 1px padding around a
+  // 15px icon was too small to reliably hit, especially on a phone.
   const stars = [1, 2, 3, 4, 5].map((n) => {
     const filled = rating != null && n <= rating;
     const style = `font-size:${size}px;color:${filled ? '#d4a017' : '#d8d2c5'}`;
     return interactive
-      ? `<button class="btn-icon" style="padding:1px" onclick="event.stopPropagation(); ${onClickFn}('${id}', ${n}, ${rating ?? 'null'})" title="${n} star${n === 1 ? '' : 's'}"><i class="ti ti-star-filled" style="${style}"></i></button>`
+      ? `<button style="padding:6px;border:none;background:none" onclick="event.stopPropagation(); ${onClickFn}('${id}', ${n}, ${rating ?? 'null'})" title="${n} star${n === 1 ? '' : 's'}"><i class="ti ti-star-filled" style="${style}"></i></button>`
       : `<i class="ti ti-star-filled" style="${style}"></i>`;
   }).join('');
-  return `<span style="display:inline-flex;align-items:center">${stars}</span>`;
+  return `<span style="display:inline-flex;flex-wrap:wrap;align-items:center">${stars}</span>`;
 }
 
 function renderRecipeCard(r) {
@@ -481,6 +486,20 @@ async function setRecipeRatingDetail(id, n, currentRating) {
   if (error) {
     recipe.rating = currentRating;
     renderDetail(document.getElementById('view-root'));
+    alert(`Could not update rating: ${error.message}`);
+  }
+}
+
+// Rating control on the Edit form only shows for an already-saved recipe
+// (id !== 'new'), since there's no row to update until the first save.
+async function setRecipeRatingEdit(id, n, currentRating) {
+  const nextRating = currentRating === n ? null : n;
+  state.viewParams.recipe.rating = nextRating;
+  renderEdit(document.getElementById('view-root'));
+  const { error } = await supabaseClient.from('recipes').update({ rating: nextRating }).eq('id', id);
+  if (error) {
+    state.viewParams.recipe.rating = currentRating;
+    renderEdit(document.getElementById('view-root'));
     alert(`Could not update rating: ${error.message}`);
   }
 }
@@ -876,6 +895,13 @@ function renderEdit(root) {
     </div>
 
     <div class="field"><label>Title</label><input id="f-title" value="${escapeHtml(recipe.title)}" /></div>
+
+    ${id !== 'new' ? `
+      <div class="field">
+        <label>Rating</label>
+        ${renderStarRating(recipe.rating, { interactive: true, onClickFn: 'setRecipeRatingEdit', id, size: 20 })}
+      </div>
+    ` : ''}
 
     <div class="field-row">
       <div class="field"><label>Source</label>
